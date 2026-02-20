@@ -199,6 +199,9 @@ class OFS_Project:
         # Shared metadata (from first funscript, OFS convention)
         self.metadata: FunscriptMetadata = FunscriptMetadata()
 
+        # Extra state (chapters, bookmarks, etc.) — arbitrary JSON dict
+        self._extra_state: dict = {}
+
         # Change-notification callbacks
         self._changed_callbacks: List[Callable] = []
 
@@ -286,6 +289,9 @@ class OFS_Project:
         if not self.funscripts:
             # Ensure at least one empty script slot
             self.funscripts.append(self._make_empty_script(""))
+
+        # Extra state (chapters, bookmarks, …)
+        self._extra_state = doc.get("extraState", {})
 
         self._valid = True
         log.info(f"Loaded project: {path} ({len(self.funscripts)} scripts)")
@@ -403,6 +409,7 @@ class OFS_Project:
                 if s.relative_path else ""
                 for s in self.funscripts
             ],
+            "extraState": self._extra_state,
         }
 
         try:

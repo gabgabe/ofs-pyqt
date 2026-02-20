@@ -2,16 +2,16 @@
 ChapterManagerWindow — Python port of OFS_ChapterManager.h / .cpp
 
 Manages named chapters / bookmarks attached to the project.
-Stored in project state dict under key "chapters".
+Chapters are persisted inside the .ofsp project file under "chapters".
 
-A chapter has:  { "name": str, "start": float (s), "end": float (s) }
-A bookmark has: { "name": str, "time": float (s) }
+A Chapter has:  { name, start (s), end (s), color [r,g,b,a] }
+A Bookmark has: { name, time (s) }
 """
 
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from imgui_bundle import imgui, ImVec2, ImVec4
 
@@ -20,19 +20,35 @@ from src.core.project      import OFS_Project
 
 log = logging.getLogger(__name__)
 
+# Default chapter colour (OFS uses a light blue)
+_DEFAULT_COLOR = (0.30, 0.60, 0.90, 1.0)
+
 
 class Chapter:
-    def __init__(self, name: str, start: float, end: float) -> None:
+    def __init__(
+        self,
+        name:  str,
+        start: float,
+        end:   float,
+        color: Tuple[float, float, float, float] = _DEFAULT_COLOR,
+    ) -> None:
         self.name  = name
         self.start = start
         self.end   = end
+        self.color = color   # (r,g,b,a) 0-1
 
     def to_dict(self):
-        return {"name": self.name, "start": self.start, "end": self.end}
+        return {
+            "name":  self.name,
+            "start": self.start,
+            "end":   self.end,
+            "color": list(self.color),
+        }
 
     @classmethod
     def from_dict(cls, d: dict):
-        return cls(d.get("name", ""), d.get("start", 0.0), d.get("end", 0.0))
+        color = tuple(d.get("color", list(_DEFAULT_COLOR)))
+        return cls(d.get("name", ""), d.get("start", 0.0), d.get("end", 0.0), color)
 
 
 class Bookmark:
@@ -57,15 +73,23 @@ class ChapterManagerWindow:
         self._chapters:  List[Chapter]  = []
         self._bookmarks: List[Bookmark] = []
         self._new_name:  str            = ""
-        self._edit_idx:  int            = -1
-        self._edit_buf:  str            = ""
+        # inline name-edit state
+        self._edit_ch_idx:  int = -1
+        self._edit_ch_buf:  str = ""
+        self._edit_bm_idx:  int = -1
+        self._edit_bm_buf:  str = ""
+        # color-picker state
+        self._color_ch_idx: int        = -1
+        self._color_buf:    List[float] = list(_DEFAULT_COLOR)
+        # last project we synced to/from (by id)
+        self._synced_project_id: int = -1
 
     # ──────────────────────────────────────────────────────────────────────
     # API called by app keybindings
     # ──────────────────────────────────────────────────────────────────────
 
     def add_chapter(self, start: float, duration: float) -> None:
-        name = f"Chapter {len(self._chapters) + 1}"
+        name = self._new_name.strip() or f"Chapter {len(self._chapters) + 1}"
         end  = min(start + 30.0, duration)
         self._chapters.append(Chapter(name, start, end))
         log.info(f"Added chapter '{name}' @ {start:.2f}s")
@@ -74,6 +98,27 @@ class ChapterManagerWindow:
         name = f"Bookmark {len(self._bookmarks) + 1}"
         self._bookmarks.append(Bookmark(name, time))
         log.info(f"Added bookmark '{name}' @ {time:.2f}s")
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Persistence helpers (called by app on load/save)
+    # ──────────────────────────────────────────────────────────────────────
+
+    def load_from_project(self, project: OFS_Project) -> None:
+        """Restore chapters/bookmarks from project state dict."""
+        pid = id(project)
+        if pid == self._synced_project_id:
+            return
+        self._synced_project_id = pid
+        pstate = getattr(project, "_extra_state", {})
+        self._chapters  = [Chapter.from_dict(d) for d in pstate.get("chapters", [])]
+        self._bookmarks = [Bookmark.from_dict(d) for d in pstate.get("bookmarks", [])]
+
+    def save_to_project(self, project: OFS_Project) -> None:
+        """Persist chapters/bookmarks into project extra state."""
+        if not hasattr(project, "_extra_state"):
+            project._extra_state = {}
+        project._extra_state["chapters"]  = [c.to_dict() for c in self._chapters]
+        project._extra_state["bookmarks"] = [b.to_dict() for b in self._bookmarks]
 
     # ──────────────────────────────────────────────────────────────────────
 
@@ -86,54 +131,198 @@ class ChapterManagerWindow:
         """Returns updated visible flag."""
         if not visible:
             return False
+
+        # Sync from project whenever a new project is active
+        if project.is_valid:
+            self.load_from_project(project)
+
         is_open = True
-        imgui.set_next_window_size(ImVec2(380, 300), imgui.Cond_.first_use_ever)
+        imgui.set_next_window_size(ImVec2(480, 360), imgui.Cond_.first_use_ever)
         opened, is_open = imgui.begin("Chapters###ChapterManager", is_open)
         if opened:
             self._draw(player, project)
         imgui.end()
+
+        # Persist every frame (cheap dict update)
+        if project.is_valid:
+            self.save_to_project(project)
+
         return is_open
 
+    # ──────────────────────────────────────────────────────────────────────
+
     def _draw(self, player: OFS_Videoplayer, project: OFS_Project) -> None:
-        cur = player.CurrentTime() if player.VideoLoaded() else 0.0
+        cur      = player.CurrentTime() if player.VideoLoaded() else 0.0
+        duration = player.Duration()    if player.VideoLoaded() else 0.0
 
-        # ── Chapters ──────────────────────────────────────────────────
-        if imgui.collapsing_header("Chapters", imgui.TreeNodeFlags_.default_open):
-            if imgui.button("+ Chapter"):
-                self.add_chapter(cur, player.Duration())
-            imgui.same_line()
-            imgui.set_next_item_width(140)
-            _, self._new_name = imgui.input_text("##cname", self._new_name)
+        # ── Add controls ──────────────────────────────────────────────
+        if imgui.button("+ Chapter"):
+            self.add_chapter(cur, duration)
+        if imgui.is_item_hovered():
+            imgui.set_tooltip("Add chapter at current playback position")
+        imgui.same_line(spacing=4)
+        imgui.set_next_item_width(140)
+        _, self._new_name = imgui.input_text("##cname", self._new_name)
+        if imgui.is_item_hovered():
+            imgui.set_tooltip("Name for next chapter (leave blank for auto)")
+        imgui.same_line(spacing=8)
+        if imgui.button("+ Bookmark"):
+            self.add_bookmark(cur)
+        if imgui.is_item_hovered():
+            imgui.set_tooltip("Add bookmark at current playback position")
 
-            for i, ch in enumerate(self._chapters):
-                imgui.push_id(i)
-                imgui.text(f"{ch.name:<20} {ch.start:.2f}s → {ch.end:.2f}s")
-                imgui.same_line()
-                if imgui.small_button("Seek"):
-                    player.SetPositionExact(ch.start)
-                imgui.same_line()
-                if imgui.small_button("X"):
-                    self._chapters.pop(i)
-                    imgui.pop_id()
-                    break
-                imgui.pop_id()
-
+        imgui.separator()
         imgui.spacing()
 
-        # ── Bookmarks ─────────────────────────────────────────────────
-        if imgui.collapsing_header("Bookmarks", imgui.TreeNodeFlags_.default_open):
-            if imgui.button("+ Bookmark"):
-                self.add_bookmark(cur)
+        # ── Chapters table ─────────────────────────────────────────────
+        table_flags = (
+            imgui.TableFlags_.borders_inner_v
+            | imgui.TableFlags_.row_bg
+            | imgui.TableFlags_.resizable
+            | imgui.TableFlags_.scroll_y
+        )
+        table_h = min(200, max(60, len(self._chapters) * 24 + 28))
 
-            for i, bm in enumerate(self._bookmarks):
-                imgui.push_id(i + 1000)
-                imgui.text(f"{bm.name:<24} {bm.time:.2f}s")
-                imgui.same_line()
-                if imgui.small_button("Seek"):
-                    player.SetPositionExact(bm.time)
-                imgui.same_line()
-                if imgui.small_button("X"):
-                    self._bookmarks.pop(i)
-                    imgui.pop_id()
-                    break
+        if imgui.begin_table("##chtable", 4, table_flags, ImVec2(-1, table_h)):
+            imgui.table_setup_column("Name",      imgui.TableColumnFlags_.width_stretch)
+            imgui.table_setup_column("Begin",     imgui.TableColumnFlags_.width_fixed, 70)
+            imgui.table_setup_column("End",       imgui.TableColumnFlags_.width_fixed, 70)
+            imgui.table_setup_column("",          imgui.TableColumnFlags_.width_fixed, 90)
+            imgui.table_headers_row()
+
+            del_idx = -1
+            for i, ch in enumerate(self._chapters):
+                imgui.table_next_row()
+                imgui.push_id(i)
+
+                # Col 0: name + color swatch
+                imgui.table_set_column_index(0)
+                # color swatch button
+                swatch_col = ImVec4(ch.color[0], ch.color[1], ch.color[2], ch.color[3])
+                imgui.push_style_color(imgui.Col_.button,         swatch_col)
+                imgui.push_style_color(imgui.Col_.button_hovered, swatch_col)
+                imgui.push_style_color(imgui.Col_.button_active,  swatch_col)
+                if imgui.button("  ##col", ImVec2(14, 14)):
+                    self._color_ch_idx = i
+                    self._color_buf    = list(ch.color)
+                imgui.pop_style_color(3)
+                if imgui.is_item_hovered():
+                    imgui.set_tooltip("Click to change chapter colour")
+                imgui.same_line(spacing=4)
+                # inline name editing
+                if self._edit_ch_idx == i:
+                    imgui.set_next_item_width(-1)
+                    enter, self._edit_ch_buf = imgui.input_text(
+                        "##chname", self._edit_ch_buf,
+                        imgui.InputTextFlags_.enter_returns_true,
+                    )
+                    if enter or (not imgui.is_item_active() and not imgui.is_item_focused()):
+                        ch.name = self._edit_ch_buf
+                        self._edit_ch_idx = -1
+                else:
+                    imgui.text(ch.name)
+                    if imgui.is_item_hovered() and imgui.is_mouse_double_clicked(0):
+                        self._edit_ch_idx = i
+                        self._edit_ch_buf = ch.name
+
+                # Col 1: begin time
+                imgui.table_set_column_index(1)
+                imgui.text(self._ts(ch.start))
+                if imgui.is_item_hovered():
+                    imgui.set_tooltip(f"{ch.start:.3f} s")
+
+                # Col 2: end time
+                imgui.table_set_column_index(2)
+                imgui.text(self._ts(ch.end))
+                if imgui.is_item_hovered():
+                    imgui.set_tooltip(f"{ch.end:.3f} s")
+
+                # Col 3: actions
+                imgui.table_set_column_index(3)
+                if imgui.small_button("Seek##ch"):
+                    player.SetPositionExact(ch.start)
+                imgui.same_line(spacing=4)
+                if imgui.small_button("X##ch"):
+                    del_idx = i
+
                 imgui.pop_id()
+
+            imgui.end_table()
+            if del_idx >= 0:
+                self._chapters.pop(del_idx)
+                if self._color_ch_idx == del_idx:
+                    self._color_ch_idx = -1
+
+        # ── Inline color picker popup ──────────────────────────────────
+        if self._color_ch_idx >= 0:
+            imgui.open_popup("##chcolor")
+        if imgui.begin_popup("##chcolor"):
+            changed, new_col = imgui.color_picker4(
+                "##cp", self._color_buf,
+                imgui.ColorEditFlags_.alpha_bar,
+            )
+            if changed:
+                self._color_buf = list(new_col)
+                if 0 <= self._color_ch_idx < len(self._chapters):
+                    self._chapters[self._color_ch_idx].color = tuple(new_col)
+            if imgui.button("OK##colok", ImVec2(60, 0)):
+                self._color_ch_idx = -1
+                imgui.close_current_popup()
+            imgui.end_popup()
+
+        imgui.spacing()
+        imgui.separator()
+
+        # ── Bookmarks table ────────────────────────────────────────────
+        imgui.text("Bookmarks")
+        bm_table_h = min(120, max(30, len(self._bookmarks) * 22 + 28))
+        if imgui.begin_table("##bmtable", 3, table_flags, ImVec2(-1, bm_table_h)):
+            imgui.table_setup_column("Name",  imgui.TableColumnFlags_.width_stretch)
+            imgui.table_setup_column("Time",  imgui.TableColumnFlags_.width_fixed, 70)
+            imgui.table_setup_column("",      imgui.TableColumnFlags_.width_fixed, 70)
+            imgui.table_headers_row()
+
+            del_bm = -1
+            for i, bm in enumerate(self._bookmarks):
+                imgui.table_next_row()
+                imgui.push_id(i + 2000)
+
+                imgui.table_set_column_index(0)
+                if self._edit_bm_idx == i:
+                    imgui.set_next_item_width(-1)
+                    enter, self._edit_bm_buf = imgui.input_text(
+                        "##bmname", self._edit_bm_buf,
+                        imgui.InputTextFlags_.enter_returns_true,
+                    )
+                    if enter or (not imgui.is_item_active() and not imgui.is_item_focused()):
+                        bm.name = self._edit_bm_buf
+                        self._edit_bm_idx = -1
+                else:
+                    imgui.text(bm.name)
+                    if imgui.is_item_hovered() and imgui.is_mouse_double_clicked(0):
+                        self._edit_bm_idx = i
+                        self._edit_bm_buf = bm.name
+
+                imgui.table_set_column_index(1)
+                imgui.text(self._ts(bm.time))
+
+                imgui.table_set_column_index(2)
+                if imgui.small_button("Seek##bm"):
+                    player.SetPositionExact(bm.time)
+                imgui.same_line(spacing=4)
+                if imgui.small_button("X##bm"):
+                    del_bm = i
+
+                imgui.pop_id()
+
+            imgui.end_table()
+            if del_bm >= 0:
+                self._bookmarks.pop(del_bm)
+
+    # ──────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _ts(t: float) -> str:
+        m = int(t) // 60
+        s = t % 60
+        return f"{m:02d}:{s:05.2f}"

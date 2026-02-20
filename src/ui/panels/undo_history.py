@@ -47,9 +47,12 @@ class UndoHistoryWindow:
                 if is_cur:
                     imgui.push_style_color(imgui.Col_.text,
                                            ImVec4(0.3, 0.8, 0.3, 1.0))
-                imgui.selectable(f"{i:3d}  {name}", is_cur)
+                clicked, _ = imgui.selectable(f"{i:3d}  {name}", is_cur)
                 if is_cur:
                     imgui.pop_style_color()
+                if clicked and not is_cur:
+                    # Jump to state i+1 (after this entry is applied)
+                    undo.jump_to(i + 1)
 
             # Current position marker
             imgui.push_style_color(imgui.Col_.text, ImVec4(1.0, 1.0, 0.2, 1.0))
@@ -60,10 +63,13 @@ class UndoHistoryWindow:
             for i, entry in enumerate(redo_stack):
                 stype = entry.state_type
                 name  = state_label(stype)
+                idx   = cur_idx + i
                 imgui.push_style_color(imgui.Col_.text,
                                        ImVec4(0.5, 0.5, 0.5, 1.0))
-                imgui.selectable(f"{cur_idx + i:3d}  {name}", False)
+                clicked, _ = imgui.selectable(f"{idx:3d}  {name}", False)
                 imgui.pop_style_color()
+                if clicked:
+                    undo.jump_to(idx + 1)
 
             if self._auto_scroll and imgui.get_scroll_y() >= imgui.get_scroll_max_y():
                 imgui.set_scroll_here_y(1.0)

@@ -119,6 +119,7 @@ class OpenFunscripter:
         # Pending "close without saving?" action
         self._pending_open_path:   Optional[str] = None   # path to open after confirm
         self._show_close_confirm:  bool           = False  # modal visible flag
+        self._pending_remove_idx:  int            = -1     # track to remove (confirm modal)
 
         # Loaded file from CLI (set in Init)
         self._cli_file: Optional[str] = None
@@ -223,7 +224,7 @@ class OpenFunscripter:
                 label_="Progress###Timeline",
                 dock_space_name_="BottomDock",
                 gui_function_=lambda: app.player_controls.DrawTimeline(
-                    app.player, app.project.active_script
+                    app.player, app.project.active_script, app.chapter_mgr
                 ),
                 is_visible_=True,
             ),
@@ -392,19 +393,28 @@ class OpenFunscripter:
         EV.listen(OFS_Events.ACTION_CLICKED,       self._on_timeline_action_clicked)
         EV.listen(OFS_Events.ACTION_SHOULD_CREATE, self._on_timeline_action_created)
         EV.listen(OFS_Events.ACTION_SHOULD_MOVE,   self._on_timeline_action_moved)
+        EV.listen(OFS_Events.CHANGE_ACTIVE_SCRIPT, self._on_change_active_script)
 
     # ──────────────────────────────────────────────────────────────────────
     # Timeline action handlers  (mirrors OFS ScriptTimelineAction* handlers)
     # ──────────────────────────────────────────────────────────────────────
 
     def _on_timeline_action_clicked(self, action, script, **kw) -> None:
-        """Left-click on dot: Ctrl → select, else → seek."""
+        """Left-click on dot: Ctrl → select, else → seek  (mirrors OFS ScriptTimelineActionClicked)."""
         from imgui_bundle import imgui as _imgui
         io = _imgui.get_io()
         if io.key_ctrl:
             script.select_action(action)
         else:
             self.player.SetPositionExact(action.at / 1000.0)
+
+    def _on_change_active_script(self, idx: int, **kw) -> None:
+        """Timeline clicked on a different track (mirrors OFS ScriptTimelineActiveScriptChanged)."""
+        scripts = self.project.funscripts
+        if 0 <= idx < len(scripts) and scripts[idx].enabled:
+            self.project.active_idx = idx
+            self._update_title()
+            self.status |= OFS_Status.GRADIENT_NEEDS_UPDATE
 
     def _on_timeline_action_created(self, action, script, **kw) -> None:
         """Ctrl+click in empty timeline space: snapshot + add action."""
@@ -472,6 +482,9 @@ class OpenFunscripter:
             if path not in self.recent_files:
                 self.recent_files.append(path)
             self._init_project()
+            # OFS: show metadata editor automatically for new projects
+            if ext != ".ofsp" and self.preferences.show_metadata_on_new:
+                self.show_metadata = True
         else:
             self._alert("Failed to open", self.project.errors)
 
@@ -1233,7 +1246,7 @@ class OpenFunscripter:
 
     def _draw_remove_confirm(self) -> None:
         """Inline confirmation popup for removing a funscript track."""
-        if not hasattr(self, '_pending_remove_idx') or self._pending_remove_idx < 0:
+        if self._pending_remove_idx < 0:
             return
         imgui.open_popup("Remove script?###rm_confirm")
         flags = imgui.WindowFlags_.no_docking | imgui.WindowFlags_.always_auto_resize

@@ -37,21 +37,30 @@ def _compute_stats(actions: List[FunscriptAction]):
         if dt > 0:
             speeds.append(abs(actions[i].pos - actions[i - 1].pos) / dt)
 
-    avg_speed = sum(speeds) / len(speeds) if speeds else 0.0
-    max_speed = max(speeds) if speeds else 0.0
+    avg_speed    = sum(speeds) / len(speeds) if speeds else 0.0
+    max_speed    = max(speeds) if speeds else 0.0
+    sorted_sp    = sorted(speeds)
+    mid          = len(sorted_sp) // 2
+    if len(sorted_sp) == 0:
+        median_speed = 0.0
+    elif len(sorted_sp) % 2 == 1:
+        median_speed = sorted_sp[mid]
+    else:
+        median_speed = (sorted_sp[mid - 1] + sorted_sp[mid]) / 2.0
 
     total_dur = (actions[-1].at - actions[0].at) / 1000.0 if n >= 2 else 0.0
     apm = (n / total_dur * 60.0) if total_dur > 0 else 0.0
 
     return {
-        "count":     n,
-        "avg_pos":   avg_pos,
-        "max_pos":   max_pos,
-        "min_pos":   min_pos,
-        "avg_speed": avg_speed,
-        "max_speed": max_speed,
-        "duration":  total_dur,
-        "apm":       apm,
+        "count":        n,
+        "avg_pos":      avg_pos,
+        "max_pos":      max_pos,
+        "min_pos":      min_pos,
+        "avg_speed":    avg_speed,
+        "median_speed": median_speed,
+        "max_speed":    max_speed,
+        "duration":     total_dur,
+        "apm":          apm,
     }
 
 
@@ -65,6 +74,15 @@ class StatisticsWindow:
         self._stats_sel: dict = {}
         self._last_hash: int  = 0
 
+    @staticmethod
+    def _script_hash(script: "Funscript") -> int:
+        """Fast hash that changes whenever the script's content or selection changes."""
+        n_all = len(list(script.actions))
+        n_sel = script.selection_size()
+        # XOR with the sum of all positions so adding/moving a point invalidates cache
+        pos_sum = sum(a.pos for a in script.actions)
+        return hash((id(script), n_all, n_sel, pos_sum))
+
     # ──────────────────────────────────────────────────────────────────────
 
     def Show(
@@ -76,8 +94,8 @@ class StatisticsWindow:
             imgui.text_disabled("No script loaded")
             return
 
-        # Recompute when script changes
-        h = id(script)
+        # Recompute when script content or selection changes
+        h = self._script_hash(script)
         if h != self._last_hash or not self._stats_all:
             self._stats_all = _compute_stats(list(script.actions))
             self._stats_sel = _compute_stats(sorted(
@@ -114,8 +132,9 @@ class StatisticsWindow:
             _row("Avg position",  f"{s['avg_pos']:.1f}")
             _row("Max position",  s["max_pos"])
             _row("Min position",  s["min_pos"])
-            _row("Avg speed",     f"{s['avg_speed']:.1f} u/s")
-            _row("Max speed",     f"{s['max_speed']:.1f} u/s")
+            _row("Avg speed",    f"{s['avg_speed']:.1f} u/s")
+            _row("Median speed", f"{s.get('median_speed', 0.0):.1f} u/s")
+            _row("Max speed",    f"{s['max_speed']:.1f} u/s")
             _row("Duration",      f"{s['duration']:.2f} s")
             _row("Actions/min",   f"{s['apm']:.1f}")
             imgui.end_table()

@@ -341,6 +341,28 @@ class UndoSystem:
         self._undo_stack.clear()
         self._redo_stack.clear()
 
+    def jump_to(self, target_idx: int) -> bool:
+        """Jump to absolute position *target_idx* in the combined history.
+
+        Index 0 = oldest committed state.
+        Index ``len(undo_stack)`` = current (now) position.
+        Index ``len(undo_stack) + len(redo_stack)`` = most recently undone state.
+        """
+        cur_idx = len(self._undo_stack)
+        changed = False
+        if target_idx < cur_idx:
+            for _ in range(cur_idx - target_idx):
+                if not self.undo():
+                    break
+                changed = True
+        elif target_idx > cur_idx:
+            steps = target_idx - cur_idx
+            for _ in range(steps):
+                if not self.redo():
+                    break
+                changed = True
+        return changed
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

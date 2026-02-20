@@ -1,14 +1,9 @@
 """
 SpecialFunctionsWindow — Python port of OFS_SpecialFunctions.h / .cpp
 
-Special edit operations:
-  • Ramer-Douglas-Peucker simplification
-  • Limit range (clamp positions)
-  • Mirror actions
-  • Scale positions
-  • Snap to frame
-  • Remove every Nth action
-  • Generate from audio (stub)
+Two functions exposed via a combo selector (OFS style):
+  0 — Range Extender
+  1 — Simplify (RDP)
 """
 
 from __future__ import annotations
@@ -26,7 +21,7 @@ def _rdp(points: List, epsilon: float) -> List:
     """Ramer-Douglas-Peucker simplification."""
     if len(points) < 3:
         return points
-    # Find point with maximum distance
+
     def _perp_dist(pt, line_start, line_end):
         x0, y0 = pt
         x1, y1 = line_start
@@ -34,9 +29,10 @@ def _rdp(points: List, epsilon: float) -> List:
         dx, dy = x2 - x1, y2 - y1
         if dx == 0 and dy == 0:
             return math.hypot(x0 - x1, y0 - y1)
-        t = ((x0 - x1) * dx + (y0 - y1) * dy) / (dx * dx + dy * dy)
-        t = max(0.0, min(1.0, t))
-        px, py = x1 + t * dx, y1 + t * dy
+        t  = ((x0 - x1) * dx + (y0 - y1) * dy) / (dx * dx + dy * dy)
+        t  = max(0.0, min(1.0, t))
+        px = x1 + t * dx
+        py = y1 + t * dy
         return math.hypot(x0 - px, y0 - py)
 
     dmax  = 0.0
@@ -54,19 +50,22 @@ def _rdp(points: List, epsilon: float) -> List:
     return [points[0], points[-1]]
 
 
+# OFS function names shown in the combo
+_FUNC_NAMES = ["Range Extender", "Simplify (RDP)"]
+
+
 class SpecialFunctionsWindow:
     """OFS Special Functions panel."""
 
     WindowId = "Special Functions###SpecFuncs"
 
     def __init__(self) -> None:
+        self._selected_func:  int   = 0      # index into _FUNC_NAMES
+        # RDP
         self._rdp_epsilon:    float = 2.0
-        self._limit_min:      int   = 0
-        self._limit_max:      int   = 100
-        self._scale_pct:      float = 100.0
-        self._remove_n:       int   = 2
-        self._range_extend:   int   = 0   # -50 … 100 (live preview value)
-        self._range_prev_val: int   = 0   # value at drag-start for undo-on-drag
+        # Range Extender
+        self._range_extend:   int   = 0      # live value -50…100
+        self._range_drag_active: bool = False  # True while slider is held
 
     # ──────────────────────────────────────────────────────────────────────
 
@@ -92,88 +91,93 @@ class SpecialFunctionsWindow:
 
     def _draw(self, script: Optional[Funscript], undo: UndoSystem) -> None:
         has_sel = bool(script and script.has_selection())
-        has_scr = script is not None
 
-        imgui.text_disabled("Selection required for most functions")
+        # ── Function selector combo ───────────────────────────────────
+        imgui.set_next_item_width(180)
+        ch, new_idx = imgui.combo("##funcsel", self._selected_func, _FUNC_NAMES)
+        if ch:
+            self._selected_func = new_idx
         imgui.separator()
         imgui.spacing()
 
-        # ── RDP simplification ────────────────────────────────────────
-        if imgui.collapsing_header("Simplify (RDP)"):
-            imgui.set_next_item_width(150)
-            _, self._rdp_epsilon = imgui.input_float(
-                "Epsilon##rdp", self._rdp_epsilon, 0.1, 1.0, "%.1f")
-            self._rdp_epsilon = max(0.1, self._rdp_epsilon)
-            if imgui.button("Simplify selection##rdp", ImVec2(-1, 0)) and has_sel:
-                self._do_rdp(script, undo)
-            if not has_sel:
-                self._disabled_hint()
+        if self._selected_func == 0:
+            self._draw_range_extender(script, undo, has_sel)
+        else:
+            self._draw_rdp(script, undo, has_sel)
 
+    # ──────────────────────────────────────────────────────────────────────
+    # Range Extender
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _draw_range_extender(
+        self,
+        script:  Optional[Funscript],
+        undo:    UndoSystem,
+        has_sel: bool,
+    ) -> None:
+        imgui.text_disabled("Stretch strokes outward (+) or compress (-)")
         imgui.spacing()
 
-        # ── Limit range ───────────────────────────────────────────────
-        if imgui.collapsing_header("Limit range"):
-            imgui.set_next_item_width(100)
-            _, self._limit_min = imgui.input_int("Min##lr", self._limit_min, 1, 5)
-            imgui.same_line()
-            imgui.set_next_item_width(100)
-            _, self._limit_max = imgui.input_int("Max##lr", self._limit_max, 1, 5)
-            self._limit_min = max(0, min(99, self._limit_min))
-            self._limit_max = max(self._limit_min + 1, min(100, self._limit_max))
-            if imgui.button("Clamp selection##lr", ImVec2(-1, 0)) and has_sel:
-                self._do_limit(script, undo)
-            if not has_sel:
-                self._disabled_hint()
+        imgui.set_next_item_width(-60)
 
-        imgui.spacing()
-
-        # ── Scale positions ───────────────────────────────────────────
-        if imgui.collapsing_header("Scale positions"):
-            imgui.set_next_item_width(120)
-            _, self._scale_pct = imgui.input_float(
-                "%%##scale", self._scale_pct, 1.0, 10.0, "%.1f%%")
-            self._scale_pct = max(1.0, min(500.0, self._scale_pct))
-            if imgui.button("Scale selection##scale", ImVec2(-1, 0)) and has_sel:
-                self._do_scale(script, undo)
-            if not has_sel:
-                self._disabled_hint()
-
-        imgui.spacing()
-
-        # ── Remove every Nth ──────────────────────────────────────────
-        if imgui.collapsing_header("Remove every Nth"):
-            imgui.set_next_item_width(80)
-            _, self._remove_n = imgui.input_int(
-                "N##rn", self._remove_n, 1, 1)
-            self._remove_n = max(2, self._remove_n)
-            if imgui.button("Remove from selection##rn", ImVec2(-1, 0)) and has_sel:
-                self._do_remove_nth(script, undo)
-            if not has_sel:
-                self._disabled_hint()
-
-        imgui.spacing()
-
-        # ── Range Extender ────────────────────────────────────────────
-        if imgui.collapsing_header("Range Extender"):
-            imgui.text_disabled("Stretch strokes outward (+) or compress (-)")
-            imgui.spacing()
-            imgui.set_next_item_width(-60)
-            # On drag-start: snapshot once so live-drag is undoable in one step
-            if imgui.is_item_activated():
-                self._range_prev_val = self._range_extend
-            changed, new_val = imgui.slider_int(
-                "##range_ext", self._range_extend, -50, 100, "%d%%")
-            if changed and has_sel and script:
+        # Detect drag-start: take a snapshot *once* so the whole live-drag
+        # collapses into a single undo entry.
+        if imgui.is_item_activated():
+            if has_sel and script:
                 undo.snapshot(StateType.RANGE_EXTEND, script)
-                script.range_extend_selection(new_val - self._range_extend)
-                self._range_extend = new_val
-            elif changed:
-                self._range_extend = new_val
-            imgui.same_line()
-            if imgui.button("Reset##re"):
-                self._range_extend = 0
-            if not has_sel:
-                self._disabled_hint()
+            self._range_drag_active = True
+
+        changed, new_val = imgui.slider_int(
+            "##range_ext", self._range_extend, -50, 100, "%d%%")
+
+        if imgui.is_item_deactivated():
+            self._range_drag_active = False
+
+        if changed and has_sel and script:
+            # Undo before re-applying so every tick stays as one undo step
+            undo.undo(script)
+            undo.snapshot(StateType.RANGE_EXTEND, script)
+            script.range_extend_selection(new_val)
+            self._range_extend = new_val
+        elif changed:
+            self._range_extend = new_val
+
+        imgui.same_line()
+        if imgui.button("Reset##re"):
+            if has_sel and script and self._range_extend != 0:
+                undo.snapshot(StateType.RANGE_EXTEND, script)
+                script.range_extend_selection(-self._range_extend)
+            self._range_extend = 0
+
+        if not has_sel:
+            self._disabled_hint()
+
+    # ──────────────────────────────────────────────────────────────────────
+    # RDP Simplify
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _draw_rdp(
+        self,
+        script:  Optional[Funscript],
+        undo:    UndoSystem,
+        has_sel: bool,
+    ) -> None:
+        imgui.text_disabled("Remove redundant points using Ramer–Douglas–Peucker")
+        imgui.spacing()
+
+        imgui.set_next_item_width(150)
+        _, self._rdp_epsilon = imgui.input_float(
+            "Epsilon##rdp", self._rdp_epsilon, 0.1, 1.0, "%.1f")
+        self._rdp_epsilon = max(0.1, self._rdp_epsilon)
+        if imgui.is_item_hovered():
+            imgui.set_tooltip(
+                "Epsilon is scaled by the average inter-action distance.\n"
+                "Larger value = more aggressive simplification.")
+
+        if imgui.button("Simplify selection##rdp", ImVec2(-1, 0)) and has_sel:
+            self._do_rdp(script, undo)
+        if not has_sel:
+            self._disabled_hint()
 
     # ──────────────────────────────────────────────────────────────────────
     # Operations
@@ -183,9 +187,21 @@ class SpecialFunctionsWindow:
         sel = sorted(list(script.selection), key=lambda a: a.at)
         if len(sel) < 3:
             return
+
+        # Scale epsilon by average inter-action Euclidean distance
         pts = [(a.at, float(a.pos)) for a in sel]
-        simplified = _rdp(pts, self._rdp_epsilon)
-        keep_at = {int(p[0]) for p in simplified}
+        if len(pts) >= 2:
+            distances = [
+                math.hypot(pts[j][0] - pts[j-1][0], pts[j][1] - pts[j-1][1])
+                for j in range(1, len(pts))
+            ]
+            avg_dist = sum(distances) / len(distances) if distances else 1.0
+        else:
+            avg_dist = 1.0
+
+        scaled_eps = self._rdp_epsilon * max(1.0, avg_dist)
+        simplified = _rdp(pts, scaled_eps)
+        keep_at    = {int(p[0]) for p in simplified}
 
         undo.snapshot(StateType.SIMPLIFY, script)
         for a in sel:
@@ -193,34 +209,9 @@ class SpecialFunctionsWindow:
                 script.remove_action(a)
         script.clear_selection()
 
-    def _do_limit(self, script: Funscript, undo: UndoSystem) -> None:
-        sel = list(script.selection)
-        undo.snapshot(StateType.ACTIONS_MOVED, script)
-        for a in sel:
-            new_pos = max(self._limit_min, min(self._limit_max, a.pos))
-            if new_pos != a.pos:
-                script.edit_action(a, FunscriptAction(a.at, new_pos))
-        script.clear_selection()
-
-    def _do_scale(self, script: Funscript, undo: UndoSystem) -> None:
-        sel = list(script.selection)
-        factor = self._scale_pct / 100.0
-        undo.snapshot(StateType.ACTIONS_MOVED, script)
-        for a in sel:
-            new_pos = max(0, min(100, int(a.pos * factor)))
-            if new_pos != a.pos:
-                script.edit_action(a, FunscriptAction(a.at, new_pos))
-        script.clear_selection()
-
-    def _do_remove_nth(self, script: Funscript, undo: UndoSystem) -> None:
-        sel = sorted(list(script.selection), key=lambda a: a.at)
-        undo.snapshot(StateType.REMOVE_SELECTION, script)
-        for i, a in enumerate(sel):
-            if i % self._remove_n == (self._remove_n - 1):
-                script.remove_action(a)
-        script.clear_selection()
-
     @staticmethod
     def _disabled_hint() -> None:
+        imgui.same_line()
+        imgui.text_disabled("  (need selection)")
         imgui.same_line()
         imgui.text_disabled("  (need selection)")

@@ -70,6 +70,7 @@ class OFS_VideoplayerControls:
 
         self._prev_paused: Optional[bool] = None
         self._chapter_tooltip: str = ""
+        self._drag_was_paused: bool = True   # for seek-pause-resume
 
     # ──────────────────────────────────────────────────────────────────────
 
@@ -142,7 +143,7 @@ class OFS_VideoplayerControls:
 
         # ── Row 1: playback buttons ────────────────────────────────────
         button_h = imgui.get_frame_height()
-        small = ImVec2(button_h, button_h)
+        small    = ImVec2(button_h, button_h)
 
         # prev-frame
         if imgui.button(fa.ICON_FA_BACKWARD_STEP, small):
@@ -167,6 +168,19 @@ class OFS_VideoplayerControls:
 
         imgui.same_line(spacing=8)
 
+        # ── ±3 s seek buttons ──────────────────────────────────────────
+        if imgui.button(fa.ICON_FA_BACKWARD + " 3s##sk_back", ImVec2(0, button_h)):
+            player.SeekRelative(-3.0)
+        if imgui.is_item_hovered():
+            imgui.set_tooltip("Seek −3 seconds  [Shift+←]")
+        imgui.same_line(spacing=2)
+        if imgui.button("3s " + fa.ICON_FA_FORWARD + "##sk_fwd", ImVec2(0, button_h)):
+            player.SeekRelative(3.0)
+        if imgui.is_item_hovered():
+            imgui.set_tooltip("Seek +3 seconds  [Shift+→]")
+
+        imgui.same_line(spacing=8)
+
         # mute
         mute_icon = fa.ICON_FA_VOLUME_XMARK if player.Volume() == 0 else fa.ICON_FA_VOLUME_HIGH
         if imgui.button(mute_icon, small):
@@ -179,8 +193,8 @@ class OFS_VideoplayerControls:
         imgui.same_line(spacing=4)
 
         # volume slider
-        avail = imgui.get_content_region_avail().x - 60
-        imgui.set_next_item_width(min(60, avail * 0.4))
+        avail = imgui.get_content_region_avail().x
+        imgui.set_next_item_width(max(40, min(60, avail * 0.15)))
         vol = player.Volume()
         changed, new_vol = imgui.slider_float("##vol", vol, 0.0, 100.0, "%.0f%%")
         if changed:
@@ -188,23 +202,43 @@ class OFS_VideoplayerControls:
 
         imgui.same_line(spacing=8)
 
-        # speed
-        imgui.set_next_item_width(min(70, avail * 0.4))
+        # speed input
+        imgui.set_next_item_width(max(50, min(70, avail * 0.15)))
         speed = player.CurrentSpeed()
-        changed_s, new_speed = imgui.input_float("##spd", speed, 0.1, 0.25, "%.2f×")
+        changed_s, new_speed = imgui.input_float("##spd", speed, 0.0, 0.0, "%.2f×")
         if changed_s:
             player.SetSpeed(max(0.05, min(5.0, new_speed)))
         if imgui.is_item_hovered():
-            imgui.set_tooltip("Playback speed\n[-/+ on numpad]")
+            imgui.set_tooltip("Playback speed  (scroll to change)")
+
+        imgui.same_line(spacing=2)
+
+        # speed preset buttons: 1×  -10%  +10%
+        spd_w = ImVec2(max(28, button_h * 1.6), button_h)
+        if imgui.button("1" + fa.ICON_FA_XMARK + "##sp1", spd_w):
+            player.SetSpeed(1.0)
+        if imgui.is_item_hovered():
+            imgui.set_tooltip("Reset speed to 1×")
+        imgui.same_line(spacing=2)
+        if imgui.button("-10%%##spm", spd_w):
+            player.SetSpeed(max(0.05, player.CurrentSpeed() * 0.9))
+        if imgui.is_item_hovered():
+            imgui.set_tooltip("Decrease speed by 10%")
+        imgui.same_line(spacing=2)
+        if imgui.button("+10%%##spp", spd_w):
+            player.SetSpeed(min(5.0, player.CurrentSpeed() * 1.1))
+        if imgui.is_item_hovered():
+            imgui.set_tooltip("Increase speed by 10%")
 
     # ──────────────────────────────────────────────────────────────────────
-    # DrawTimeline — heatmap + seek bar
+    # DrawTimeline — custom heatmap + seek bar with chapter/bookmark overlay
     # ──────────────────────────────────────────────────────────────────────
 
     def DrawTimeline(
         self,
         player: OFS_Videoplayer,
         script:  Optional[Funscript],
+        chapter_mgr=None,   # ChapterManagerWindow | None
     ) -> None:
         if not player.VideoLoaded():
             imgui.text_disabled("No video")
@@ -215,62 +249,178 @@ class OFS_VideoplayerControls:
         if duration <= 0.0:
             return
 
-        avail = imgui.get_content_region_avail()
-        bar_h   = 12.0
-        seek_h  = imgui.get_frame_height()
-        total_h = bar_h + seek_h + 4
-
-        dl = imgui.get_window_draw_list()
+        avail  = imgui.get_content_region_avail()
+        dl     = imgui.get_window_draw_list()
         origin = imgui.get_cursor_screen_pos()
 
-        # ── Heatmap strip ─────────────────────────────────────────────────
+        W  = max(1.0, avail.x)
+        BAR_H   = 22.0          # main timeline bar height
+        CHAP_H  = BAR_H * 0.28  # chapter strip height (top of bar)
+        BM_R    = 4.0           # bookmark circle radius
+        pct     = current / duration if duration > 0 else 0.0
+        ox, oy  = origin.x, origin.y
+
+        # 1 ── Background (grey unfilled portion) ──────────────────────
+        dl.add_rect_filled(
+            ImVec2(ox,            oy),
+            ImVec2(ox + W,        oy + BAR_H),
+            0xFF505050,
+        )
+
+        # 2 ── Progress fill (highlight up to cursor) ──────────────────
+        fill_x = ox + W * pct
+        dl.add_rect_filled(
+            ImVec2(ox,            oy),
+            ImVec2(fill_x,        oy + BAR_H),
+            0xBB2D5FAA,
+        )
+
+        # 3 ── Heatmap overlay ──────────────────────────────────────────
         if self._heatmap_colours:
-            seg_w = avail.x / len(self._heatmap_colours)
+            n     = len(self._heatmap_colours)
+            seg_w = W / n
             for i, col in enumerate(self._heatmap_colours):
                 if col == 0:
                     continue
-                x0 = origin.x + i       * seg_w
-                x1 = origin.x + (i + 1) * seg_w
-                y0 = origin.y
-                y1 = origin.y + bar_h
-                dl.add_rect_filled(ImVec2(x0, y0), ImVec2(x1, y1), col)
-        else:
-            dl.add_rect_filled(
-                origin,
-                ImVec2(origin.x + avail.x, origin.y + bar_h),
-                imgui.get_color_u32(ImVec4(0.15, 0.15, 0.15, 1.0))
+                x0 = ox + i * seg_w
+                x1 = ox + (i + 1) * seg_w
+                dl.add_rect_filled(ImVec2(x0, oy), ImVec2(x1, oy + BAR_H), col)
+
+        # 4 ── Chapters (top strip) ────────────────────────────────────
+        if chapter_mgr and chapter_mgr._chapters:
+            for ch in chapter_mgr._chapters:
+                ch_x0 = ox + (ch.start / duration) * W
+                ch_x1 = ox + (ch.end   / duration) * W
+                if ch_x1 - ch_x0 < 1.0:
+                    continue
+                cr, cg, cb = ch.color[0], ch.color[1], ch.color[2]
+                ch_col = self._rgba_to_u32(cr, cg, cb, 0.85)
+                dl.add_rect_filled(
+                    ImVec2(ch_x0, oy),
+                    ImVec2(ch_x1, oy + CHAP_H),
+                    ch_col, 2.0,
+                )
+                # Active-chapter border
+                if ch.start <= current <= ch.end:
+                    dl.add_rect(
+                        ImVec2(ch_x0, oy),
+                        ImVec2(ch_x1, oy + CHAP_H),
+                        0xFFFFFFFF, 2.0, 0, 1.5,
+                    )
+                # Label if it fits
+                if ch.name:
+                    ts = imgui.calc_text_size(ch.name)
+                    cw = ch_x1 - ch_x0
+                    if ts.x + 4 <= cw:
+                        dl.add_text(
+                            ImVec2(ch_x0 + (cw - ts.x) * 0.5,
+                                   oy + (CHAP_H - ts.y) * 0.5),
+                            0xFFFFFFFF, ch.name,
+                        )
+
+        # 5 ── Bookmarks (small circles at bottom) ─────────────────────
+        if chapter_mgr and chapter_mgr._bookmarks:
+            for bm in chapter_mgr._bookmarks:
+                bm_x = ox + (bm.time / duration) * W
+                dl.add_circle_filled(
+                    ImVec2(bm_x, oy + BAR_H - BM_R - 1), BM_R,
+                    0xFFFFFFFF, 8,
+                )
+
+        # 6 ── Cursor line (white + dark shadow) ───────────────────────
+        cx = ox + W * pct
+        dl.add_line(ImVec2(cx, oy - 1), ImVec2(cx, oy + BAR_H + 1), 0xFF000000, 3.0)
+        dl.add_line(ImVec2(cx, oy - 1), ImVec2(cx, oy + BAR_H + 1), 0xFFFFFFFF, 1.5)
+
+        # 7 ── Invisible button for interaction ────────────────────────
+        imgui.set_cursor_screen_pos(ImVec2(ox, oy))
+        imgui.invisible_button("##timeline_bar", ImVec2(W, BAR_H))
+
+        if imgui.is_item_activated():
+            self._drag_was_paused = player.IsPaused()
+            if not player.IsPaused():
+                player.SetPaused(True)
+
+        if imgui.is_item_active() and imgui.is_mouse_down(0):
+            mx    = imgui.get_mouse_pos().x
+            rel   = max(0.0, min(1.0, (mx - ox) / W))
+            player.SetPositionExact(rel * duration)
+            if player.IsPaused():
+                player.Update(0.0)
+
+        if imgui.is_item_deactivated():
+            if not self._drag_was_paused:
+                player.SetPaused(False)
+
+        # 8 ── Hover effects ───────────────────────────────────────────
+        if imgui.is_item_hovered():
+            mouse = imgui.get_mouse_pos()
+            rel   = (mouse.x - ox) / W
+            hover_t = max(0.0, min(duration, rel * duration))
+            # Vertical hover line
+            dl.add_line(
+                ImVec2(mouse.x, oy),
+                ImVec2(mouse.x, oy + BAR_H),
+                0x88FFFFFF, 1.0,
+            )
+            # Tooltip: time + delta
+            delta  = hover_t - current
+            sign   = "+" if delta >= 0 else ""
+            imgui.set_tooltip(
+                f"{self._format_time(hover_t, duration)}  ({sign}{self._format_delta(abs(delta))})"
             )
 
-        # Chapter / bookmark markers
-        # (project chapters drawn by chapter manager via event)
+        # 9 ── Chapter context menus ───────────────────────────────────
+        if chapter_mgr and chapter_mgr._chapters:
+            if imgui.is_item_hovered() and imgui.is_mouse_clicked(1):
+                mouse    = imgui.get_mouse_pos()
+                click_t  = ((mouse.x - ox) / W) * duration
+                for i, ch in enumerate(chapter_mgr._chapters):
+                    if ch.start <= click_t <= ch.end:
+                        imgui.open_popup(f"##ch_ctx_tl_{i}")
 
-        imgui.dummy(ImVec2(avail.x, bar_h))
+            for i, ch in enumerate(chapter_mgr._chapters):
+                if imgui.begin_popup(f"##ch_ctx_tl_{i}"):
+                    imgui.text_disabled(ch.name or f"Chapter {i+1}")
+                    imgui.separator()
+                    if imgui.menu_item("Seek to start")[0]:
+                        player.SetPositionExact(ch.start)
+                    if imgui.menu_item("Seek to end")[0]:
+                        player.SetPositionExact(ch.end)
+                    imgui.end_popup()
 
-        # ── Seek slider ────────────────────────────────────────────────────
-        imgui.set_next_item_width(avail.x)
-        pos_pct = current / duration if duration > 0 else 0.0
-        changed, new_pct = imgui.slider_float(
-            "##seek", pos_pct, 0.0, 1.0,
-            format=self._format_time(current, duration),
-            flags=imgui.SliderFlags_.no_input,
-        )
-        if changed:
-            player.SetPositionExact(new_pct * duration)
-            if player.IsPaused():
-                # Render one frame to update display while paused
-                player.Update(0.0)
+        # 10 ── Time label below bar ───────────────────────────────────
+        imgui.dummy(ImVec2(1, 2))
+        imgui.text_disabled(self._format_time(current, duration))
 
     # ──────────────────────────────────────────────────────────────────────
     # Helpers
     # ──────────────────────────────────────────────────────────────────────
 
     @staticmethod
+    def _rgba_to_u32(r: float, g: float, b: float, a: float = 1.0) -> int:
+        ri = int(r * 255) & 0xFF
+        gi = int(g * 255) & 0xFF
+        bi = int(b * 255) & 0xFF
+        ai = int(a * 255) & 0xFF
+        return ri | (gi << 8) | (bi << 16) | (ai << 24)
+
+    @staticmethod
     def _format_time(t: float, duration: float) -> str:
-        def _ts(s):
-            h = int(s) // 3600
-            m = (int(s) % 3600) // 60
+        def _ts(s: float) -> str:
+            s   = max(0.0, s)
+            h   = int(s) // 3600
+            m   = (int(s) % 3600) // 60
             sec = s % 60
             if h:
                 return f"{h:02d}:{m:02d}:{sec:05.2f}"
             return f"{m:02d}:{sec:05.2f}"
         return f"{_ts(t)} / {_ts(duration)}"
+
+    @staticmethod
+    def _format_delta(dt: float) -> str:
+        """Format a time delta as  mm:ss.xx (no total)."""
+        dt  = max(0.0, dt)
+        m   = int(dt) // 60
+        sec = dt % 60
+        return f"{m:02d}:{sec:05.2f}"

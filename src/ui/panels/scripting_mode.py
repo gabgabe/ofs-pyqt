@@ -64,6 +64,9 @@ class ScriptingMode:
         # Frame step speed multiplier
         self._step_size: int = 1
 
+        # Action insert delay offset (OFS: state.actionInsertDelayMs)
+        self._action_delay_ms: int = 0
+
         self._player: Optional[OFS_Videoplayer] = None
         self._undo:   Optional[UndoSystem]      = None
         self._script: Optional[Funscript]       = None
@@ -117,6 +120,12 @@ class ScriptingMode:
         if not s or not self._player:
             return
         ft = self.LogicalFrameTime()
+
+        # Apply offset when playing (mirrors OFS ScriptingMode::AddEditAction)
+        if not self._player.IsPaused() and self._action_delay_ms != 0:
+            action = FunscriptAction(
+                action.at + self._action_delay_ms, action.pos
+            )
 
         # Alternating mode: override position
         if self.mode == ScriptingModeEnum.ALTERNATING:
@@ -215,6 +224,19 @@ class ScriptingMode:
         changed, val = imgui.input_int("Step size", self._step_size, 1, 1)
         if changed:
             self._step_size = max(1, min(60, val))
+        imgui.spacing()
+        imgui.separator()
+        imgui.spacing()
+        imgui.set_next_item_width(-1)
+        changed2, delay = imgui.drag_int(
+            "Offset ms##delay", self._action_delay_ms, 1.0, -500, 500)
+        if changed2:
+            self._action_delay_ms = max(-500, min(500, delay))
+        if imgui.is_item_hovered():
+            imgui.begin_tooltip()
+            imgui.text("Offset in milliseconds applied to actions\n"
+                       "when inserting while the video is playing.")
+            imgui.end_tooltip()
 
     def _show_recording(self) -> None:
         col = ImVec4(0.9, 0.2, 0.2, 1.0) if self._recording else ImVec4(0.2, 0.7, 0.2, 1.0)
