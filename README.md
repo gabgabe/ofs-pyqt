@@ -200,3 +200,4 @@ Pull requests welcome! Areas for contribution:
 - [Dear ImGui](https://github.com/ocornut/imgui)
 - [imgui-bundle](https://github.com/pthom/imgui_bundle)
 - [python-mpv](https://github.com/jaseg/python-mpv)
+# ofs-pyqt
