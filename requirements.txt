@@ -1,0 +1,26 @@
+# OpenFunscripter — Python port
+# Architecture: Dear ImGui + SDL2 + OpenGL + mpv render context (no Qt)
+
+# ── Core UI (includes Dear ImGui 1.92, SDL2, OpenGL3 backend) ────────────
+imgui-bundle>=1.92.0
+
+# ── SDL2 Python bindings + bundled dylib ─────────────────────────────────
+pysdl2>=0.9.17
+pysdl2-dll>=2.32.0
+
+# ── Video playback via mpv render context ────────────────────────────────
+python-mpv>=1.0.0
+
+# ── OpenGL (FBO + texture management) ────────────────────────────────────
+PyOpenGL>=3.1.7
+
+# ── Numerics ─────────────────────────────────────────────────────────────
+numpy>=1.24.0
+
+# ── WebSocket API (optional — for external control / TCode) ──────────────
+websockets>=12.0
+
+# ── Device output (optional) ─────────────────────────────────────────────
+pyserial>=3.5
+python-osc>=1.8.0
+python-rtmidi>=1.5.0
