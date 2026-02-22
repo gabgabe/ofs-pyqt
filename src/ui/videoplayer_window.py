@@ -47,6 +47,9 @@ class OFS_VideoplayerWindow:
         # Context-menu visibility
         self._ctx_open: bool = False
 
+        # #15 lockedPosition — prevent pan/zoom changes when True
+        self.locked_position: bool = False
+
         # Size of the video area last frame
         self._last_video_size: ImVec2 = ImVec2(0, 0)
 
@@ -170,14 +173,14 @@ class OFS_VideoplayerWindow:
             if imgui.is_mouse_double_clicked(0):
                 player.TogglePlay()
 
-            # Scroll wheel → zoom (Ctrl = fine)
+            # Scroll wheel → zoom (Ctrl = fine) — guarded by locked_position
             wheel = io.mouse_wheel
-            if wheel != 0.0:
+            if wheel != 0.0 and not self.locked_position:
                 factor = 0.05 if not io.key_ctrl else 0.01
                 self._zoom = max(0.1, min(8.0, self._zoom + wheel * factor))
 
-        # Left drag → pan
-        if imgui.is_item_active() and imgui.is_mouse_dragging(0, 2.0):
+        # Left drag → pan — guarded by locked_position
+        if imgui.is_item_active() and imgui.is_mouse_dragging(0, 2.0) and not self.locked_position:
             if self._drag_start is None:
                 self._drag_start       = ImVec2(io.mouse_pos.x, io.mouse_pos.y)
                 self._drag_offset_start = ImVec2(self._offset.x, self._offset.y)
@@ -208,4 +211,11 @@ class OFS_VideoplayerWindow:
             imgui.separator()
             if imgui.menu_item("Reset zoom/pan", "", False)[0]:
                 self.reset_translation_and_zoom()
+            imgui.separator()
+            _, self.locked_position = imgui.menu_item(
+                "Lock pan/zoom", "", self.locked_position)
+            if self.locked_position:
+                imgui.push_style_color(imgui.Col_.text, imgui.ImVec4(1.0, 0.8, 0.2, 1.0))
+                imgui.text_disabled("Pan/zoom locked")
+                imgui.pop_style_color()
             imgui.end_popup()

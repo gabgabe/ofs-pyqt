@@ -14,6 +14,7 @@ No Qt anywhere.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -32,6 +33,8 @@ from src.core.undo_system import UndoSystem, StateType
 from src.core.video_player import OFS_Videoplayer
 from src.core.keybindings  import OFS_KeybindingSystem
 from src.core.websocket_api import WebSocketAPI
+from src.core.waveform     import WaveformData
+from src.core.thumbnail    import VideoThumbnailManager
 
 from src.ui.videoplayer_window   import OFS_VideoplayerWindow
 from src.ui.videoplayer_controls import OFS_VideoplayerControls
@@ -79,8 +82,12 @@ class OpenFunscripter:
         self.player       = OFS_Videoplayer()
         self.project      = OFS_Project()
         self.undo_system  = UndoSystem()
-        self.keys         = OFS_KeybindingSystem()
+        self.keys         = OFS_KeybindingSystem(
+            settings_path=Path.home() / ".ofs-pyqt" / "keybindings.json"
+        )
         self.web_api      = WebSocketAPI()
+        self.waveform     = WaveformData()
+        self.thumbnail_mgr = VideoThumbnailManager()
 
         # UI subsystems
         self.player_window   = OFS_VideoplayerWindow()
@@ -102,6 +109,9 @@ class OpenFunscripter:
         self._last_backup: float = time.monotonic()
         self.recent_files: List[str] = []
 
+        # Unsaved-edits timer (for menu bar alert)
+        self._unsaved_since: float = 0.0   # monotonic sec when unsaved edits began
+
         # Window visibility flags (mirrors OFS OpenFunscripterState)
         self.show_statistics    : bool = False
         self.show_history       : bool = False
@@ -116,6 +126,12 @@ class OpenFunscripter:
         self.show_about          : bool = False
         self.show_project_editor : bool = False
 
+        # Timeline display flags
+        self.always_show_bookmark_labels: bool = False
+
+        # WebSocket server auto-start preference (persisted on exit)
+        self._ws_active: bool = True
+
         # Pending "close without saving?" action
         self._pending_open_path:   Optional[str] = None   # path to open after confirm
         self._show_close_confirm:  bool           = False  # modal visible flag
@@ -123,6 +139,8 @@ class OpenFunscripter:
 
         # Loaded file from CLI (set in Init)
         self._cli_file: Optional[str] = None
+        # Timestamp of last keybinding activity (for idling suppression)
+        self._last_key_activity: float = 0.0
 
     # ──────────────────────────────────────────────────────────────────────
     # Init
@@ -153,7 +171,7 @@ class OpenFunscripter:
         )
         params.imgui_window_params.show_menu_bar     = True
         params.imgui_window_params.show_status_bar   = False
-        params.imgui_window_params.menu_app_title    = ""
+        params.imgui_window_params.menu_app_title    = "OpenFunscripter"
 
         # FPS idling — disabled while video plays, re-enabled when paused/idle.
         # Toggled every frame in _pre_new_frame based on playback state.
@@ -170,6 +188,7 @@ class OpenFunscripter:
         params.callbacks.show_menus     = self._show_main_menu
         params.callbacks.after_swap     = self._after_swap
         params.callbacks.before_exit    = self._before_exit
+        params.callbacks.any_backend_event_callback = self._on_backend_event
 
         hello_imgui.run(params)
 
@@ -195,8 +214,6 @@ class OpenFunscripter:
             hello_imgui.DockingSplit("BottomDock",    "ControlsDock",
                                      imgui.Dir.left,  0.15),
             # Right sub-splits
-            hello_imgui.DockingSplit("RightDock", "SimulatorDock",
-                                     imgui.Dir.down, 0.15),
             hello_imgui.DockingSplit("RightDock", "ActionDock",
                                      imgui.Dir.down, 0.38),
             hello_imgui.DockingSplit("RightDock", "StatsDock",
@@ -224,7 +241,9 @@ class OpenFunscripter:
                 label_="Progress###Timeline",
                 dock_space_name_="BottomDock",
                 gui_function_=lambda: app.player_controls.DrawTimeline(
-                    app.player, app.project.active_script, app.chapter_mgr
+                    app.player, app.project.active_script, app.chapter_mgr,
+                    app.always_show_bookmark_labels,
+                    app.thumbnail_mgr,
                 ),
                 is_visible_=True,
             ),
@@ -248,14 +267,6 @@ class OpenFunscripter:
                 dock_space_name_="RightDock",
                 gui_function_=lambda: app.scripting.Show(app.player),
                 is_visible_=True,
-            ),
-            hello_imgui.DockableWindow(
-                label_="Simulator###Simulator",
-                dock_space_name_="SimulatorDock",
-                gui_function_=lambda: app.simulator.Show(
-                    app.player, app.project.active_script
-                ),
-                is_visible_=app.show_simulator,
             ),
             hello_imgui.DockableWindow(
                 label_="Action Editor###ActionEditor",
@@ -292,10 +303,16 @@ class OpenFunscripter:
         """Called after GL context + ImGui are ready."""
         log.info("_post_init: GL context ready")
 
+        # Restore persisted panel visibility and settings
+        self._load_app_state()
+
         # Init video player (needs GL context current)
         hw_accel = self.preferences.force_hw_decoding
         if not self.player.Init(hw_accel):
             log.error("Failed to init video player")
+
+        # Init thumbnail manager (needs same GL context as player)
+        self.thumbnail_mgr.Init()
 
         # Init player controls + heatmap
         self.player_controls.Init(self.player)
@@ -318,9 +335,53 @@ class OpenFunscripter:
 
         # Init timeline
         self.script_timeline.Init()
+        self.script_timeline.waveform = self.waveform
 
-        # Init web API
-        self.web_api.start()
+        # Faster key-repeat: default ImGui settings (delay=0.275s, rate=0.050s)
+        # feel sluggish for frame-by-frame stepping and action moving.
+        # Shorter delay + higher rate makes held-key scrolling smooth.
+        try:
+            io = imgui.get_io()
+            io.key_repeat_delay = 0.150   # was 0.275 s — start repeating sooner
+            io.key_repeat_rate  = 0.020   # was 0.050 s → 50 Hz repeat
+        except Exception:
+            pass
+
+        # Apply saved font scale
+        if self.preferences.font_size != 14:
+            try:
+                imgui.get_io().font_global_scale = self.preferences.font_size / 14.0
+            except Exception:
+                pass
+
+        # Wire WebSocket API state getters and command callbacks
+        self.web_api.set_state_getters(
+            get_time=self.player.CurrentTime,
+            get_duration=self.player.Duration,
+            get_playing=lambda: not self.player.IsPaused(),
+            get_speed=self.player.CurrentSpeed,
+            get_media=self.player.VideoPath,
+            get_funscripts=(
+                lambda: self.project.funscripts if self.project.is_valid else []
+            ),
+        )
+        self.web_api.set_callbacks(
+            on_change_time=lambda t: self.player.SetPositionExact(t),
+            on_change_play=lambda p: self.player.SetPaused(not p),
+            on_change_playbackspeed=self.player.SetSpeed,
+        )
+
+        # Broadcast speed changes to WS clients
+        _prev_speed_cb = self.player.on_speed_change
+        def _on_speed_change(speed: float) -> None:
+            self.web_api.broadcast_playbackspeed_change(speed)
+            if _prev_speed_cb:
+                _prev_speed_cb(speed)
+        self.player.on_speed_change = _on_speed_change
+
+        # Init web API (auto-start only if was active on last exit)
+        if self._ws_active:
+            self.web_api.start()
 
         # Load CLI file or recent
         if self._cli_file:
@@ -334,22 +395,79 @@ class OpenFunscripter:
         self.player.Update(delta)
         idle = not (self.player.VideoLoaded() and not self.player.IsPaused())
         self.project.update(delta, idle)
-        # Disable FPS idling while video is playing so the render loop runs at
-        # full speed.  Re-enable when paused so CPU is not wasted at idle.
+        EV.process()
+        self.keys.ProcessKeybindings()
+        # Suppress FPS idling while video plays OR while keys are held.
+        # Without this, paused + held arrow key → 9 FPS idle → jerky stepping.
+        if self.keys.any_key_active:
+            self._last_key_activity = time.monotonic()
         try:
             rp = hello_imgui.get_runner_params()
-            playing = self.player.VideoLoaded() and not self.player.IsPaused()
-            rp.fps_idling.enable_idling = not playing
+            playing  = self.player.VideoLoaded() and not self.player.IsPaused()
+            key_held = (time.monotonic() - self._last_key_activity) < 0.25
+            rp.fps_idling.enable_idling = not playing and not key_held
         except Exception:
             pass
-        self.keys.ProcessKeybindings()
-        EV.process()
+        self.scripting.set_active_position(
+            self.simulator.mouse_value * 100.0,
+            self.simulator.mouse_on_sim,
+        )
         self.scripting.Update()
         self.script_timeline.Update()
+        # Update thumbnail manager (renders pending frame with GL ctx current)
+        self.thumbnail_mgr.Update()
+        # Sync waveform visibility + lazy-load if just enabled
+        self.script_timeline.show_waveform = self.preferences.show_waveform
+        if (
+            self.preferences.show_waveform
+            and self.player.VideoLoaded()
+            and not self.waveform.ready
+            and not self.waveform.loading
+        ):
+            self.waveform.load_async(self.player.VideoPath())
+        # Sync preferences into ScriptTimeline render flags each frame
+        self.script_timeline.show_max_speed_highlight = self.preferences.highlight_max_speed
+        self.script_timeline.max_speed_threshold      = self.preferences.max_speed_highlight
+        self.script_timeline.max_speed_color          = tuple(self.preferences.max_speed_color)
+        self.script_timeline.waveform_scale           = self.preferences.waveform_scale
+        self.script_timeline.waveform_color           = tuple(self.preferences.waveform_color)
+
+        # Sync overlay mode + params from ScriptingMode → ScriptTimeline
+        sc = self.scripting
+        self.script_timeline.overlay_mode = int(sc.overlay_mode)
+        # For FRAME overlay: use override fps if enabled, else actual video fps
+        if sc._frame_fps_override and sc._frame_fps_value > 0:
+            self.script_timeline.overlay_fps = sc._frame_fps_value
+        else:
+            self.script_timeline.overlay_fps = (
+                self.player.Fps() if self.player.VideoLoaded() else 30.0)
+        # For TEMPO overlay
+        self.script_timeline.overlay_bpm              = sc._tempo_bpm
+        self.script_timeline.overlay_tempo_offset_s   = sc._tempo_offset_s
+        self.script_timeline.overlay_tempo_measure_idx = sc._tempo_measure_idx
         self._maybe_auto_backup()
 
     def _show_gui(self) -> None:
         """All floating / non-docked windows drawn here."""
+        # Simulator — top-level floating window, no_docking prevents it from
+        # accidentally snapping into any dock space (including the video).
+        if self.show_simulator:
+            flags = (
+                imgui.WindowFlags_.no_docking
+                | imgui.WindowFlags_.no_collapse
+            )
+            imgui.set_next_window_size(ImVec2(200, 460), imgui.Cond_.first_use_ever)
+            imgui.set_next_window_pos(
+                ImVec2(imgui.get_main_viewport().size.x - 220, 40),
+                imgui.Cond_.first_use_ever,
+            )
+            opened, self.show_simulator = imgui.begin(
+                "Simulator###Simulator", self.show_simulator, flags
+            )
+            if opened:
+                self.simulator.Show(self.player, self.project.active_script)
+            imgui.end()
+
         self.show_special_funcs = self.special_funcs.Show(
             self.project.active_script, self.undo_system, self.show_special_funcs
         )
@@ -361,6 +479,8 @@ class OpenFunscripter:
         )
         if self.show_preferences:
             self.show_preferences = self.preferences.Show()
+        if self.show_ws_api:
+            self._show_ws_window()
         if self.show_about:
             self._show_about_window()
         if self.show_project_editor:
@@ -381,7 +501,12 @@ class OpenFunscripter:
 
     def Shutdown(self) -> None:
         log.info("Shutdown")
+        self._save_app_state()
+        kb_path = Path.home() / ".ofs-pyqt" / "keybindings.json"
+        kb_path.parent.mkdir(parents=True, exist_ok=True)
+        self.keys.Save(kb_path)
         self.web_api.stop()
+        self.thumbnail_mgr.Shutdown()
         self.player.Shutdown()
 
     # ──────────────────────────────────────────────────────────────────────
@@ -390,6 +515,7 @@ class OpenFunscripter:
 
     def _register_events(self) -> None:
         EV.listen(OFS_Events.FUNSCRIPT_CHANGED,    self._on_funscript_changed)
+        EV.listen(OFS_Events.FUNSCRIPT_REMOVED,    self._on_funscript_removed)
         EV.listen(OFS_Events.ACTION_CLICKED,       self._on_timeline_action_clicked)
         EV.listen(OFS_Events.ACTION_SHOULD_CREATE, self._on_timeline_action_created)
         EV.listen(OFS_Events.ACTION_SHOULD_MOVE,   self._on_timeline_action_moved)
@@ -435,6 +561,13 @@ class OpenFunscripter:
     def _on_video_loaded(self, path: str) -> None:
         log.info(f"Video loaded: {path}")
         self.status |= OFS_Status.GRADIENT_NEEDS_UPDATE
+        # Kick off background waveform extraction
+        self.waveform.clear()
+        if self.preferences.show_waveform:
+            self.waveform.load_async(path)
+        self.thumbnail_mgr.SetVideo(path)
+        self.web_api.broadcast_media_change(path)
+        self.web_api.broadcast_project_change()
 
     def _on_duration_change(self, duration: float) -> None:
         if self.project.is_valid:
@@ -443,15 +576,53 @@ class OpenFunscripter:
             for fs in self.project.funscripts:
                 fs.metadata.duration = duration_ms
         self.status |= OFS_Status.GRADIENT_NEEDS_UPDATE
+        self.web_api.broadcast_duration_change(duration)
 
     def _on_time_change(self, time_s: float) -> None:
-        pass  # timeline polls player directly each frame
+        self.web_api.broadcast_time_change(time_s)
 
     def _on_pause_change(self, paused: bool) -> None:
-        pass  # idle toggled per-frame in _pre_new_frame
+        self.web_api.broadcast_play_change(not paused)
 
     def _on_funscript_changed(self, **kw) -> None:
         self.status |= OFS_Status.GRADIENT_NEEDS_UPDATE
+        # Start unsaved timer if not already running
+        if self._unsaved_since == 0.0:
+            self._unsaved_since = time.monotonic()
+        script = kw.get("script")
+        if script is not None:
+            self.web_api.broadcast_funscript_change(
+                script.title, list(script.actions)
+            )
+
+    def _on_funscript_removed(self, title: str = "", **kw) -> None:
+        if title:
+            self.web_api.broadcast_funscript_remove(title)
+
+    def _on_backend_event(self, event) -> bool:
+        """SDL2 backend event callback — handle drop-file events.
+        Returns True if the event was consumed."""
+        try:
+            # event is a hello_imgui.BackendEvent (contains .sdl_event)
+            sdl_ev = getattr(event, 'sdl_event', None) or event
+            # SDL_DROPFILE = 0x1000
+            ev_type = getattr(sdl_ev, 'type', None)
+            if ev_type == 0x1000:   # SDL_DROPFILE
+                raw_file = getattr(sdl_ev.drop, 'file', None)
+                if raw_file:
+                    import ctypes
+                    if isinstance(raw_file, (bytes, bytearray)):
+                        path = raw_file.rstrip(b'\x00').decode('utf-8', errors='replace')
+                    elif isinstance(raw_file, ctypes.c_char_p):
+                        path = (raw_file.value or b'').decode('utf-8', errors='replace')
+                    else:
+                        path = str(raw_file)
+                    if path:
+                        self.open_file(path)
+                    return True
+        except Exception as e:
+            log.debug(f"_on_backend_event: {e}")
+        return False
 
     # ──────────────────────────────────────────────────────────────────────
     # Project management (mirrors OFS openFile / initProject / closeProject)
@@ -780,6 +951,47 @@ class OpenFunscripter:
         reg("next_action", _next_action, "Next action",     "Navigation",
             [(0, K.up_arrow, True)],   repeat=True)
 
+        def _prev_action_multi():
+            """Mirrors OFS prev_action_multi: navigate to nearest action BEHIND
+            the cursor across ALL loaded scripts (Ctrl+↓)."""
+            scripts = self.project.funscripts
+            if not scripts:
+                return
+            current_time = self.player.CurrentTime()
+            best_time: float = -1.0
+            for s in scripts:
+                a = s.get_previous_action_behind(current_time - 0.001)
+                if a is not None:
+                    t = a.at / 1000.0
+                    if best_time < 0.0 or abs(current_time - t) < abs(current_time - best_time):
+                        best_time = t
+            if best_time >= 0.0:
+                self.player.SetPositionExact(best_time)
+
+        def _next_action_multi():
+            """Mirrors OFS next_action_multi: navigate to nearest action AHEAD
+            of the cursor across ALL loaded scripts (Ctrl+↑)."""
+            scripts = self.project.funscripts
+            if not scripts:
+                return
+            current_time = self.player.CurrentTime()
+            best_time: float = -1.0
+            for s in scripts:
+                a = s.get_next_action_ahead(current_time + 0.001)
+                if a is not None:
+                    t = a.at / 1000.0
+                    if best_time < 0.0 or abs(current_time - t) < abs(current_time - best_time):
+                        best_time = t
+            if best_time >= 0.0:
+                self.player.SetPositionExact(best_time)
+
+        reg("prev_action_multi", _prev_action_multi,
+            "Previous action (all scripts)", "Navigation",
+            [(K.mod_ctrl, K.down_arrow, True)], repeat=True)
+        reg("next_action_multi", _next_action_multi,
+            "Next action (all scripts)", "Navigation",
+            [(K.mod_ctrl, K.up_arrow, True)], repeat=True)
+
         reg("prev_frame",
             lambda: self.scripting.PreviousFrame() if self.player.IsPaused() else None,
             "Previous frame", "Navigation", [(0, K.left_arrow, True)], repeat=True)
@@ -787,9 +999,24 @@ class OpenFunscripter:
             lambda: self.scripting.NextFrame() if self.player.IsPaused() else None,
             "Next frame", "Navigation", [(0, K.right_arrow, True)], repeat=True)
 
+        def _frame_x3(direction: int) -> None:
+            if not self.player.IsPaused():
+                return
+            key = K.right_arrow if direction > 0 else K.left_arrow
+            # Single click → 3 frames; held repeat → 10 frames per step
+            frames = 3 if imgui.is_key_pressed(key, repeat=False) else 10
+            self.player.SeekFrames(frames * direction * self.scripting._step_size)
+
+        reg("prev_frame_x3", lambda: _frame_x3(-1),
+            "Previous frame ×3 / ×10 held", "Navigation",
+            [(K.mod_ctrl, K.left_arrow, True)], repeat=True)
+        reg("next_frame_x3", lambda: _frame_x3(1),
+            "Next frame ×3 / ×10 held", "Navigation",
+            [(K.mod_ctrl, K.right_arrow, True)], repeat=True)
+
         fast_step = self.preferences.fast_step_amount
-        reg("fast_step",     lambda: self.player.SeekFrames( fast_step), "Fast step",     "Navigation", [(K.mod_ctrl, K.right_arrow, True)], repeat=True)
-        reg("fast_backstep", lambda: self.player.SeekFrames(-fast_step), "Fast backstep", "Navigation", [(K.mod_ctrl, K.left_arrow,  True)], repeat=True)
+        reg("fast_step",     lambda: self.player.SeekFrames( fast_step), "Fast step",     "Navigation")
+        reg("fast_backstep", lambda: self.player.SeekFrames(-fast_step), "Fast backstep", "Navigation")
 
         # ── Utility ───────────────────────────────────────────────────────
         reg_grp("Utility", "Utility")
@@ -911,10 +1138,45 @@ class OpenFunscripter:
         reg("goto_start",  lambda: self.player.SetPositionPercent(0.0), "Go to start", "Videoplayer")
         reg("goto_end",    lambda: self.player.SetPositionPercent(1.0), "Go to end",   "Videoplayer")
 
+        # Scroll wheel pseudo-key bindings (no default action; bindable by user)
+        reg("scroll_up",   lambda: None, "Scroll wheel up",   "Videoplayer")
+        reg("scroll_down", lambda: None, "Scroll wheel down",  "Videoplayer")
+
         # ── Chapters ──────────────────────────────────────────────────────
         reg_grp("Chapters", "Chapters")
         reg("create_chapter",  lambda: self.chapter_mgr.add_chapter(self.player.CurrentTime(), self.player.Duration()), "Create chapter",  "Chapters")
         reg("create_bookmark", lambda: self.chapter_mgr.add_bookmark(self.player.CurrentTime()), "Create bookmark", "Chapters")
+
+    def save_heatmap(self, path: str, width: int = 1280, height: int = 100,
+                     with_chapters: bool = False) -> None:
+        """Export the heatmap to a PNG file.
+
+        Mirrors OFS saveHeatmap(path, width, height, withChapters).
+        with_chapters=True adds a chapter colour strip above the heatmap
+        (total height = 2×height).
+        """
+        chapters = None
+        if with_chapters:
+            chapters = self.chapter_mgr.chapters if hasattr(self.chapter_mgr, "chapters") else []
+        ok = self.player_controls.save_heatmap_png(path, width, height, chapters)
+        if ok:
+            log.info(f"Heatmap saved to {path}")
+        else:
+            self._alert("Save heatmap", "Failed to save heatmap (no data or Pillow missing).")
+
+    def _save_heatmap_dialog(self, with_chapters: bool = False) -> None:
+        """Open a save-file dialog then call save_heatmap()."""
+        try:
+            from imgui_bundle import portable_file_dialogs as pfd
+            s = self._active()
+            default_name = (s.title if s else "heatmap") + "_Heatmap.png"
+            default = str(Path(self._prefpath()) / default_name)
+            result = pfd.save_file("Save heatmap", default,
+                                   filters=["PNG image", "*.png"]).result()
+            if result:
+                self.save_heatmap(result, with_chapters=with_chapters)
+        except ImportError:
+            pass
 
     def _move_action_to_current(self) -> None:
         s = self._active()
@@ -932,6 +1194,26 @@ class OpenFunscripter:
 
     def _show_main_menu(self) -> None:
         """Called inside BeginMainMenuBar / EndMainMenuBar by hello_imgui."""
+
+        # ── Menu bar alert: red background when unsaved > 5 min ───────────
+        if self.project.is_valid and self.project.has_unsaved_edits():
+            if self._unsaved_since == 0.0:
+                self._unsaved_since = time.monotonic()
+            unsaved_secs = time.monotonic() - self._unsaved_since
+            t = min(1.0, unsaved_secs / 300.0)
+            if t > 0.0:
+                base  = imgui.get_style_color_vec4(imgui.Col_.menu_bar_bg)
+                alert = ImVec4(0.60, 0.06, 0.06, 1.0)
+                blended = ImVec4(
+                    base.x + (alert.x - base.x) * t,
+                    base.y + (alert.y - base.y) * t,
+                    base.z + (alert.z - base.z) * t,
+                    1.0,
+                )
+                imgui.push_style_color(imgui.Col_.menu_bar_bg, blended)
+                self._menu_bar_alert_pushed = True
+        else:
+            self._unsaved_since = 0.0
 
         # ── FILE ──────────────────────────────────────────────────────────
         if imgui.begin_menu("File"):
@@ -953,6 +1235,9 @@ class OpenFunscripter:
                 self.quick_export()
             if imgui.menu_item("Export active...", "", False, valid)[0]:
                 self._export_active_dialog()
+            multi = valid and len(self.project.funscripts) > 1
+            if imgui.menu_item("Export all to dir...", "", False, multi)[0]:
+                self._export_all_dialog()
             imgui.separator()
             auto_bk = bool(self.status & OFS_Status.AUTO_BACKUP)
             changed, auto_bk = imgui.menu_item("Auto backup", "", auto_bk)
@@ -1015,6 +1300,12 @@ class OpenFunscripter:
             imgui.separator()
             if imgui.menu_item("Save frame as image", "F2", False)[0]:
                 self.player.SaveFrameToImage(self._prefpath("screenshot"))
+            has_heatmap = bool(self.player_controls._heatmap_colours)
+            imgui.separator()
+            if imgui.menu_item("Save heatmap…", "", False, has_heatmap)[0]:
+                self._save_heatmap_dialog(with_chapters=False)
+            if imgui.menu_item("Save heatmap with chapters…", "", False, has_heatmap)[0]:
+                self._save_heatmap_dialog(with_chapters=True)
             imgui.end_menu()
 
         # ── SELECT ────────────────────────────────────────────────────────
@@ -1051,6 +1342,10 @@ class OpenFunscripter:
             _, self.show_metadata    = imgui.menu_item("Metadata",         "", self.show_metadata)
             _, self.show_ws_api      = imgui.menu_item("WebSocket API",    "", self.show_ws_api)
             imgui.separator()
+            imgui.separator()
+            _, self.always_show_bookmark_labels = imgui.menu_item(
+                "Always show bookmark labels", "", self.always_show_bookmark_labels)
+            imgui.separator()
             _, self.show_video = imgui.menu_item("Draw video", "", self.show_video)
             if imgui.menu_item("Reset video position", "", False)[0]:
                 self.player_window.reset_translation_and_zoom()
@@ -1073,6 +1368,11 @@ class OpenFunscripter:
         # Render floating windows from here (keybinding window)
         self.keys.RenderKeybindingWindow()
 
+        # Pop alert style if pushed this frame
+        if getattr(self, '_menu_bar_alert_pushed', False):
+            imgui.pop_style_color()
+            self._menu_bar_alert_pushed = False
+
         # Update heatmap if needed
         if self.status & OFS_Status.GRADIENT_NEEDS_UPDATE:
             self.status &= ~OFS_Status.GRADIENT_NEEDS_UPDATE
@@ -1085,6 +1385,30 @@ class OpenFunscripter:
     # ──────────────────────────────────────────────────────────────────────
     # About window
     # ──────────────────────────────────────────────────────────────────────
+
+    def _show_ws_window(self) -> None:
+        """Simple WebSocket API status window with start/stop toggle."""
+        imgui.set_next_window_size(ImVec2(320, 120), imgui.Cond_.first_use_ever)
+        opened, self.show_ws_api = imgui.begin(
+            "WebSocket API###ws_api", self.show_ws_api,
+            imgui.WindowFlags_.no_docking | imgui.WindowFlags_.always_auto_resize,
+        )
+        if opened:
+            running = self.web_api.is_running
+            changed, want_active = imgui.checkbox("Enable server", self._ws_active)
+            if changed:
+                self._ws_active = want_active
+                if want_active and not running:
+                    self.web_api.start()
+                elif not want_active and running:
+                    self.web_api.stop()
+            imgui.same_line()
+            status_col = ImVec4(0.2, 0.8, 0.2, 1.0) if running else ImVec4(0.6, 0.6, 0.6, 1.0)
+            imgui.text_colored(status_col, "Running" if running else "Stopped")
+            imgui.spacing()
+            imgui.text_disabled(f"ws://localhost:{self.web_api.port}")
+            imgui.text_disabled(f"Clients: {self.web_api.client_count}")
+        imgui.end()
 
     def _show_about_window(self) -> None:
         imgui.set_next_window_size(ImVec2(400, 200), imgui.Cond_.first_use_ever)
@@ -1301,9 +1625,75 @@ class OpenFunscripter:
         except ImportError:
             pass
 
+    def _export_all_dialog(self) -> None:
+        """Open a directory picker and export all funscripts into it.
+
+        Mirrors OFS ShowMainMenuBar → Export All (multi-script path):
+          Util::OpenDirectoryDialog → LoadedProject->ExportFunscripts(dir)
+        """
+        try:
+            from imgui_bundle import portable_file_dialogs as pfd
+            default = str(Path(self.project.path).parent) if self.project.path else ""
+            result = pfd.select_folder("Export all funscripts to…", default).result()
+            if result:
+                count = self.project.export_funscripts(output_dir=result)
+                log.info(f"Exported {count} script(s) to {result}")
+        except ImportError:
+            pass
+
     # ──────────────────────────────────────────────────────────────────────
     # Helpers
     # ──────────────────────────────────────────────────────────────────────
+
+    # ──────────────────────────────────────────────────────────────────────
+    # App state persistence (panel visibility, display flags, WS preference)
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _load_app_state(self) -> None:
+        """Restore panel visibility + misc flags from ~/.ofs-pyqt/app_state.json."""
+        path = Path(self._prefpath()) / "app_state.json"
+        if not path.exists():
+            return
+        try:
+            state = json.loads(path.read_text())
+            self.show_statistics             = state.get("show_statistics",             self.show_statistics)
+            self.show_history                = state.get("show_history",                self.show_history)
+            self.show_simulator              = state.get("show_simulator",              self.show_simulator)
+            self.show_action_editor          = state.get("show_action_editor",          self.show_action_editor)
+            self.show_special_funcs          = state.get("show_special_funcs",          self.show_special_funcs)
+            self.show_chapter_mgr            = state.get("show_chapter_mgr",            self.show_chapter_mgr)
+            self.show_metadata               = state.get("show_metadata",               self.show_metadata)
+            self.show_ws_api                 = state.get("show_ws_api",                 self.show_ws_api)
+            self.show_video                  = state.get("show_video",                  self.show_video)
+            self.always_show_bookmark_labels = state.get("always_show_bookmark_labels", self.always_show_bookmark_labels)
+            self._ws_active                  = state.get("ws_active",                   self._ws_active)
+            self.player_window.video_mode    = state.get("video_mode",                 self.player_window.video_mode)
+            log.info("App state restored")
+        except Exception as e:
+            log.warning(f"Could not load app state: {e}")
+
+    def _save_app_state(self) -> None:
+        """Persist panel visibility + misc flags to ~/.ofs-pyqt/app_state.json."""
+        state = {
+            "show_statistics":             self.show_statistics,
+            "show_history":                self.show_history,
+            "show_simulator":              self.show_simulator,
+            "show_action_editor":          self.show_action_editor,
+            "show_special_funcs":          self.show_special_funcs,
+            "show_chapter_mgr":            self.show_chapter_mgr,
+            "show_metadata":               self.show_metadata,
+            "show_ws_api":                 self.show_ws_api,
+            "show_video":                  self.show_video,
+            "always_show_bookmark_labels": self.always_show_bookmark_labels,
+            "ws_active":                   self._ws_active,
+            "video_mode":                  self.player_window.video_mode,
+        }
+        path = Path(self._prefpath()) / "app_state.json"
+        try:
+            path.write_text(json.dumps(state, indent=2))
+            log.info("App state saved")
+        except Exception as e:
+            log.warning(f"Could not save app state: {e}")
 
     def _prefpath(self, sub: str = "") -> str:
         base = Path.home() / ".ofs-pyqt"

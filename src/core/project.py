@@ -468,14 +468,13 @@ class OFS_Project:
         return False
 
     def quick_export(self) -> bool:
-        """Export the active funscript to its stored path."""
-        script = self.active_script
-        if script is None:
-            return False
-        path = self._make_path_absolute(script.relative_path)
-        if not path:
-            return False
-        return script.save(path)
+        """Export ALL funscripts to their stored paths.
+
+        Mirrors OFS quickExport() which calls ExportFunscripts() (no args),
+        writing every script to its original path next to the project file.
+        """
+        count = self.export_funscripts(output_dir=None)
+        return count > 0
 
     # ------------------------------------------------------------------
     # Script management
@@ -496,6 +495,12 @@ class OFS_Project:
             if self.state.active_script_idx >= len(self.funscripts):
                 self.state.active_script_idx = max(0, len(self.funscripts) - 1)
             self._notify_changed()
+            try:
+                from .events import EV, OFS_Events
+                EV.dispatch(OFS_Events.FUNSCRIPT_REMOVED,
+                            title=removed.title, path=removed._path)
+            except Exception:
+                pass
 
     def cycle_active_script(self, direction: int = 1) -> None:
         """Cycle active script forwards (+1) or backwards (-1)."""

@@ -11,6 +11,10 @@ A Bookmark has: { name, time (s) }
 from __future__ import annotations
 
 import logging
+import os
+import shutil
+import subprocess
+import threading
 from typing import List, Optional, Tuple
 
 from imgui_bundle import imgui, ImVec2, ImVec4
@@ -83,6 +87,9 @@ class ChapterManagerWindow:
         self._color_buf:    List[float] = list(_DEFAULT_COLOR)
         # last project we synced to/from (by id)
         self._synced_project_id: int = -1
+        # export clip state
+        self._export_status: str  = ""   # last status message
+        self._export_busy:   bool = False
 
     # ──────────────────────────────────────────────────────────────────────
     # API called by app keybindings
@@ -98,6 +105,46 @@ class ChapterManagerWindow:
         name = f"Bookmark {len(self._bookmarks) + 1}"
         self._bookmarks.append(Bookmark(name, time))
         log.info(f"Added bookmark '{name}' @ {time:.2f}s")
+
+    def _export_chapter(
+        self,
+        ch: "Chapter",
+        video_path: str,
+    ) -> None:
+        """Export chapter as a clip using ffmpeg (-c copy, lossless)."""
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            self._export_status = "\u26a0 ffmpeg not found in PATH"
+            self._export_busy = False
+            return
+        out_dir  = os.path.dirname(video_path)
+        base     = os.path.splitext(os.path.basename(video_path))[0]
+        safe     = ch.name.replace(" ", "_")[:40]
+        for ch_bad in r'\/:*?"<>|':
+            safe = safe.replace(ch_bad, "_")
+        out_path = os.path.join(out_dir, f"{base}__{safe}.mp4")
+        cmd = [
+            ffmpeg, "-y",
+            "-loglevel", "quiet",
+            "-ss", str(ch.start),
+            "-to", str(ch.end),
+            "-i", video_path,
+            "-c", "copy",
+            out_path,
+        ]
+        log.info("Exporting clip: %s", out_path)
+        try:
+            result = subprocess.run(cmd, timeout=3600, stderr=subprocess.DEVNULL)
+            if result.returncode == 0:
+                self._export_status = f"\u2705 {os.path.basename(out_path)}"
+            else:
+                self._export_status = f"\u274c ffmpeg exited {result.returncode}"
+        except subprocess.TimeoutExpired:
+            self._export_status = "\u274c Timed out"
+        except Exception as exc:
+            self._export_status = f"\u274c {exc}"
+        finally:
+            self._export_busy = False
 
     # ──────────────────────────────────────────────────────────────────────
     # Persistence helpers (called by app on load/save)
@@ -241,9 +288,41 @@ class ChapterManagerWindow:
                 imgui.table_set_column_index(3)
                 if imgui.small_button("Seek##ch"):
                     player.SetPositionExact(ch.start)
-                imgui.same_line(spacing=4)
+                if imgui.is_item_hovered():
+                    imgui.set_tooltip("Seek to chapter start")
+                imgui.same_line(spacing=2)
+                if imgui.small_button("▶##chsetbegin"):
+                    ch.start = player.CurrentTime()
+                    if ch.start > ch.end:
+                        ch.end = ch.start
+                if imgui.is_item_hovered():
+                    imgui.set_tooltip("Set Begin to current time")
+                imgui.same_line(spacing=2)
+                if imgui.small_button("◀##chsetend"):
+                    ch.end = player.CurrentTime()
+                    if ch.end < ch.start:
+                        ch.start = ch.end
+                if imgui.is_item_hovered():
+                    imgui.set_tooltip("Set End to current time")
+                imgui.same_line(spacing=2)
                 if imgui.small_button("X##ch"):
                     del_idx = i
+
+                # Right-click context menu on the entire row for export
+                if imgui.begin_popup_context_item(f"##ctx{i}"):
+                    if imgui.menu_item("Export Clip")[0]:
+                        vp = player.VideoPath() if player.VideoLoaded() else ""
+                        if vp and not self._export_busy:
+                            self._export_busy = True
+                            self._export_status = "Exporting\u2026"
+                            threading.Thread(
+                                target=self._export_chapter,
+                                args=(ch, vp),
+                                daemon=True,
+                            ).start()
+                        elif not vp:
+                            self._export_status = "\u26a0 No video loaded"
+                    imgui.end_popup()
 
                 imgui.pop_id()
 
@@ -252,6 +331,17 @@ class ChapterManagerWindow:
                 self._chapters.pop(del_idx)
                 if self._color_ch_idx == del_idx:
                     self._color_ch_idx = -1
+
+        # Export status line
+        if self._export_status:
+            if "\u2705" in self._export_status:
+                imgui.push_style_color(imgui.Col_.text, ImVec4(0.3, 1.0, 0.3, 1.0))
+            elif "\u274c" in self._export_status or "\u26a0" in self._export_status:
+                imgui.push_style_color(imgui.Col_.text, ImVec4(1.0, 0.4, 0.3, 1.0))
+            else:
+                imgui.push_style_color(imgui.Col_.text, ImVec4(1.0, 0.85, 0.2, 1.0))
+            imgui.text_small(self._export_status)
+            imgui.pop_style_color()
 
         # ── Inline color picker popup ──────────────────────────────────
         if self._color_ch_idx >= 0:

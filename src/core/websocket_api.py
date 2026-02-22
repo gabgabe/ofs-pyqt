@@ -1,43 +1,28 @@
 """
 WebSocket API — real-time OFS bridge.
 
-Mirrors the OFS Lua/WebSocket extension API so that external tools
+Implements the OFS WebSocket extension protocol so that external tools
 (TCode firmware, haptics runtimes, custom GUIs) can subscribe to
 playback events and send commands.
 
-Protocol: newline-delimited JSON over WebSocket.
+Protocol: JSON over WebSocket, path: ws://host:port/ofs
 
-Inbound messages (client → server):
-  {"type": "seek",    "time": <seconds>}
-  {"type": "play"}
-  {"type": "pause"}
-  {"type": "speed",   "speed": <float>}
-  {"type": "add_action",  "at": <ms>, "pos": <0-100>}
-  {"type": "remove_action","at": <ms>}
-  {"type": "save"}
+Outbound events (server → all clients):
+  {"type":"event","name":"time_change",         "data":{"time":<s>}}
+  {"type":"event","name":"play_change",          "data":{"playing":<bool>}}
+  {"type":"event","name":"duration_change",      "data":{"duration":<s>}}
+  {"type":"event","name":"media_change",         "data":{"path":<str>}}
+  {"type":"event","name":"playbackspeed_change", "data":{"speed":<float>}}
+  {"type":"event","name":"project_change",       "data":{}}
+  {"type":"event","name":"funscript_change",     "data":{"name":<str>,"actions":[...]}}
+  {"type":"event","name":"funscript_remove",     "data":{"name":<str>}}
 
-Outbound messages (server → all clients):
-  {"type": "position",  "time": <seconds>, "pos": <0-100|null>}
-  {"type": "duration",  "duration": <seconds>}
-  {"type": "playing",   "playing": <bool>}
-  {"type": "actions",   "script": <name>, "actions": [...]}
-  {"type": "error",     "message": <str>}
+Inbound commands (client → server):
+  {"type":"command","name":"change_time",           "data":{"time":<s>}}
+  {"type":"command","name":"change_play",           "data":{"playing":<bool>}}
+  {"type":"command","name":"change_playbackspeed",  "data":{"speed":<float>}}
 
-Usage::
-
-    api = WebSocketAPI(port=8080)
-    api.set_callbacks(
-        on_seek=player.seek_absolute,
-        on_play=player.play,
-        on_pause=player.pause,
-        on_speed=player.set_speed,
-        on_add_action=...,
-        on_remove_action=...,
-        on_save=...,
-    )
-    api.start()      # non-blocking (runs in thread)
-    api.broadcast_position(t_s, pos_0_100)
-    api.stop()
+On connect: {"connected":"OFS 3.0.0"} followed by full state dump (UpdateAll).
 """
 
 from __future__ import annotations
@@ -46,9 +31,13 @@ import asyncio
 import json
 import logging
 import threading
-from typing import Any, Callable, Dict, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 log = logging.getLogger(__name__)
+
+OFS_VERSION = "3.0.0"
+WS_PATH = "/ofs"
+FUNSCRIPT_DEBOUNCE_S = 0.200   # 200 ms debounce per script
 
 try:
     import websockets
@@ -58,11 +47,16 @@ except ImportError:
     _HAS_WEBSOCKETS = False
 
 
+def _event(name: str, data: Dict[str, Any]) -> str:
+    """Serialize an outbound event envelope to JSON."""
+    return json.dumps({"type": "event", "name": name, "data": data})
+
+
 class WebSocketAPI:
     """
     Lightweight WebSocket server that exposes OFS state to external clients.
 
-    Thread-safe: public methods may be called from the Qt main thread;
+    Thread-safe: public methods may be called from the main thread;
     the asyncio event loop runs on a dedicated daemon thread.
     """
 
@@ -76,25 +70,46 @@ class WebSocketAPI:
         self._running = False
         self._stop_event: Optional[asyncio.Event] = None
 
-        # Callbacks set by the main window
-        self._on_seek:          Optional[Callable[[float], None]] = None
-        self._on_play:          Optional[Callable[[], None]] = None
-        self._on_pause:         Optional[Callable[[], None]] = None
-        self._on_speed:         Optional[Callable[[float], None]] = None
-        self._on_add_action:    Optional[Callable[[int, int], None]] = None
-        self._on_remove_action: Optional[Callable[[int], None]] = None
-        self._on_save:          Optional[Callable[[], None]] = None
+        # State getters (registered by app via set_state_getters)
+        self._get_time:       Optional[Callable[[], float]] = None
+        self._get_duration:   Optional[Callable[[], float]] = None
+        self._get_playing:    Optional[Callable[[], bool]]  = None
+        self._get_speed:      Optional[Callable[[], float]] = None
+        self._get_media:      Optional[Callable[[], str]]   = None
+        self._get_funscripts: Optional[Callable[[], List]]  = None
+
+        # Command callbacks (registered by app via set_callbacks)
+        self._on_change_time:          Optional[Callable[[float], None]] = None
+        self._on_change_play:          Optional[Callable[[bool], None]]  = None
+        self._on_change_playbackspeed: Optional[Callable[[float], None]] = None
+
+        # Per-script debounce state for funscript_change
+        self._pending_handles: Dict[str, asyncio.TimerHandle] = {}
+        self._pending_data:    Dict[str, str]                 = {}
 
     # ------------------------------------------------------------------
-    # Public API (called from Qt thread)
+    # Public configuration  (called from main thread before/after start)
     # ------------------------------------------------------------------
+
+    def set_state_getters(self, **kwargs: Callable) -> None:
+        """
+        Register getter callables for the on-connect UpdateAll dump.
+
+        Accepted keys: get_time, get_duration, get_playing, get_speed,
+        get_media, get_funscripts.
+        """
+        for key, val in kwargs.items():
+            attr = f"_{key}"
+            if hasattr(self, attr):
+                setattr(self, attr, val)
+            else:
+                log.warning("WebSocketAPI.set_state_getters: unknown key %r", key)
 
     def set_callbacks(self, **kwargs: Callable) -> None:
         """
-        Register handler callables.
+        Register command handler callables.
 
-        Accepted keyword args: on_seek, on_play, on_pause, on_speed,
-        on_add_action, on_remove_action, on_save.
+        Accepted keys: on_change_time, on_change_play, on_change_playbackspeed.
         """
         for key, val in kwargs.items():
             attr = f"_{key}"
@@ -102,6 +117,10 @@ class WebSocketAPI:
                 setattr(self, attr, val)
             else:
                 log.warning("WebSocketAPI.set_callbacks: unknown key %r", key)
+
+    # ------------------------------------------------------------------
+    # Server lifecycle
+    # ------------------------------------------------------------------
 
     def start(self) -> bool:
         """Start the WebSocket server in a background thread. Returns True on success."""
@@ -116,7 +135,8 @@ class WebSocketAPI:
         )
         self._thread.start()
         self._running = True
-        log.info("WebSocket API started on ws://%s:%d", self._host, self._port)
+        log.info("WebSocket API started on ws://%s:%d%s",
+                 self._host, self._port, WS_PATH)
         return True
 
     def stop(self) -> None:
@@ -128,22 +148,67 @@ class WebSocketAPI:
         if self._thread:
             self._thread.join(timeout=3.0)
 
-    def broadcast_position(self, time_s: float, pos: Optional[float] = None) -> None:
-        """Send current playhead position (seconds) and script position (0-100)."""
-        self._broadcast_nowait({"type": "position", "time": round(time_s, 4),
-                                 "pos": round(pos, 1) if pos is not None else None})
+    # ------------------------------------------------------------------
+    # Outbound broadcasts  (called from main thread)
+    # ------------------------------------------------------------------
+
+    def broadcast_time_change(self, time_s: float) -> None:
+        self._broadcast_nowait(_event("time_change", {"time": round(time_s, 4)}))
+
+    def broadcast_play_change(self, playing: bool) -> None:
+        self._broadcast_nowait(_event("play_change", {"playing": bool(playing)}))
+
+    def broadcast_duration_change(self, duration_s: float) -> None:
+        self._broadcast_nowait(_event("duration_change",
+                                      {"duration": round(duration_s, 3)}))
+
+    def broadcast_media_change(self, path: str) -> None:
+        self._broadcast_nowait(_event("media_change", {"path": path}))
+
+    def broadcast_playbackspeed_change(self, speed: float) -> None:
+        self._broadcast_nowait(_event("playbackspeed_change",
+                                      {"speed": round(speed, 4)}))
+
+    def broadcast_project_change(self) -> None:
+        self._broadcast_nowait(_event("project_change", {}))
+
+    def broadcast_funscript_change(self, name: str, actions) -> None:
+        """
+        Broadcast a full funscript with a 200 ms debounce per script name.
+        Rapid successive calls for the same name are coalesced into one send.
+        """
+        if not self._running or self._loop is None:
+            return
+        payload = _event("funscript_change", {
+            "name": name,
+            "actions": [{"at": a.at, "pos": a.pos} for a in actions],
+        })
+        self._pending_data[name] = payload
+        asyncio.run_coroutine_threadsafe(
+            self._schedule_funscript(name), self._loop
+        )
+
+    def broadcast_funscript_remove(self, name: str) -> None:
+        self._broadcast_nowait(_event("funscript_remove", {"name": name}))
+
+    # --- Backward-compat aliases so existing call-sites keep working ---
+
+    def broadcast_position(self, time_s: float,
+                           pos: Optional[float] = None) -> None:
+        self.broadcast_time_change(time_s)
 
     def broadcast_duration(self, duration_s: float) -> None:
-        self._broadcast_nowait({"type": "duration", "duration": round(duration_s, 3)})
+        self.broadcast_duration_change(duration_s)
 
     def broadcast_playing(self, playing: bool) -> None:
-        self._broadcast_nowait({"type": "playing", "playing": playing})
+        self.broadcast_play_change(playing)
 
     def broadcast_actions(self, script_name: str, actions: list) -> None:
-        """Broadcast full action list for a script (after edits)."""
-        payload = [{"at": a.at, "pos": a.pos} for a in actions]
-        self._broadcast_nowait({"type": "actions", "script": script_name,
-                                 "actions": payload})
+        self.broadcast_funscript_change(script_name, actions)
+
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
 
     @property
     def is_running(self) -> bool:
@@ -153,8 +218,12 @@ class WebSocketAPI:
     def port(self) -> int:
         return self._port
 
+    @property
+    def client_count(self) -> int:
+        return len(self._clients)
+
     # ------------------------------------------------------------------
-    # Internal
+    # Internal — loop management
     # ------------------------------------------------------------------
 
     def _run_loop(self) -> None:
@@ -170,21 +239,43 @@ class WebSocketAPI:
                 async with websockets.serve(self._handler, self._host, port):
                     if attempt:
                         self._port = port
-                        log.info("WebSocket API bound to ws://%s:%d (fallback port)", self._host, port)
-                    await self._stop_event.wait()  # run until stop() sets the event
+                        log.info(
+                            "WebSocket API bound to ws://%s:%d (fallback port)",
+                            self._host, port)
+                    await self._stop_event.wait()
                 return
             except OSError:
                 if attempt == 9:
-                    log.error("WebSocket API: could not bind on ports %d-%d", self._port, port)
+                    log.error("WebSocket API: could not bind on ports %d-%d",
+                              self._port, port)
                     raise
 
     async def _shutdown(self) -> None:
         if self._stop_event:
             self._stop_event.set()
 
-    async def _handler(self, ws: "WebSocketServerProtocol", path: str = "/") -> None:
+    # ------------------------------------------------------------------
+    # Internal — connection handler
+    # ------------------------------------------------------------------
+
+    async def _handler(self, ws: "WebSocketServerProtocol",
+                       path: str = "/") -> None:
+        # Only accept connections on /ofs; reject anything else.
+        norm = (path or "/").rstrip("/") or "/"
+        if norm != WS_PATH:
+            await ws.close(1008, f"Expected path {WS_PATH}")
+            return
+
         self._clients.add(ws)
-        log.debug("WS client connected: %s", ws.remote_address)
+        log.debug("WS client connected: %s  path=%s", ws.remote_address, path)
+
+        # Send welcome + full state dump to the new client
+        try:
+            await ws.send(json.dumps({"connected": f"OFS {OFS_VERSION}"}))
+            await self._send_update_all(ws)
+        except Exception:
+            pass
+
         try:
             async for raw in ws:
                 try:
@@ -199,32 +290,86 @@ class WebSocketAPI:
             self._clients.discard(ws)
             log.debug("WS client disconnected: %s", ws.remote_address)
 
-    async def _dispatch(self, msg: Dict[str, Any]) -> None:
-        """Route an inbound message to the appropriate callback."""
-        t = msg.get("type")
+    async def _send_update_all(self, ws: "WebSocketServerProtocol") -> None:
+        """Send the full current state to a newly-connected client."""
         try:
-            if t == "seek" and self._on_seek:
-                self._on_seek(float(msg["time"]))
-            elif t == "play" and self._on_play:
-                self._on_play()
-            elif t == "pause" and self._on_pause:
-                self._on_pause()
-            elif t == "speed" and self._on_speed:
-                self._on_speed(float(msg["speed"]))
-            elif t == "add_action" and self._on_add_action:
-                self._on_add_action(int(msg["at"]), int(msg["pos"]))
-            elif t == "remove_action" and self._on_remove_action:
-                self._on_remove_action(int(msg["at"]))
-            elif t == "save" and self._on_save:
-                self._on_save()
-        except (KeyError, ValueError, TypeError) as e:
-            log.warning("WS dispatch error for %r: %s", t, e)
+            if self._get_duration:
+                await ws.send(_event("duration_change",
+                                     {"duration": round(self._get_duration(), 3)}))
+            if self._get_playing:
+                await ws.send(_event("play_change",
+                                     {"playing": bool(self._get_playing())}))
+            if self._get_speed:
+                await ws.send(_event("playbackspeed_change",
+                                     {"speed": round(self._get_speed(), 4)}))
+            if self._get_time:
+                await ws.send(_event("time_change",
+                                     {"time": round(self._get_time(), 4)}))
+            if self._get_media:
+                media = self._get_media()
+                if media:
+                    await ws.send(_event("media_change", {"path": media}))
+            await ws.send(_event("project_change", {}))
+            if self._get_funscripts:
+                for fs in self._get_funscripts():
+                    payload = _event("funscript_change", {
+                        "name": fs.title,
+                        "actions": [{"at": a.at, "pos": a.pos}
+                                    for a in fs.actions],
+                    })
+                    await ws.send(payload)
+        except Exception as exc:
+            log.debug("_send_update_all error: %s", exc)
 
-    def _broadcast_nowait(self, payload: Dict[str, Any]) -> None:
-        """Thread-safe fire-and-forget broadcast."""
+    # ------------------------------------------------------------------
+    # Internal — command dispatch
+    # ------------------------------------------------------------------
+
+    async def _dispatch(self, msg: Dict[str, Any]) -> None:
+        """Route an inbound command message to the appropriate callback."""
+        if msg.get("type") != "command":
+            return
+        name = msg.get("name", "")
+        data = msg.get("data") or {}
+        try:
+            if name == "change_time" and self._on_change_time:
+                self._on_change_time(float(data["time"]))
+            elif name == "change_play" and self._on_change_play:
+                self._on_change_play(bool(data["playing"]))
+            elif name == "change_playbackspeed" and self._on_change_playbackspeed:
+                self._on_change_playbackspeed(float(data["speed"]))
+        except (KeyError, ValueError, TypeError) as e:
+            log.warning("WS dispatch error for command %r: %s", name, e)
+
+    # ------------------------------------------------------------------
+    # Internal — per-script debounced funscript broadcast
+    # ------------------------------------------------------------------
+
+    async def _schedule_funscript(self, name: str) -> None:
+        """Cancel any pending timer for *name* and arm a fresh 200 ms one."""
+        old = self._pending_handles.pop(name, None)
+        if old is not None:
+            old.cancel()
+        handle = self._loop.call_later(
+            FUNSCRIPT_DEBOUNCE_S, self._fire_funscript, name
+        )
+        self._pending_handles[name] = handle
+
+    def _fire_funscript(self, name: str) -> None:
+        """Called by call_later inside the event loop — send the queued payload."""
+        self._pending_handles.pop(name, None)
+        payload = self._pending_data.pop(name, None)
+        if payload and self._clients:
+            asyncio.ensure_future(self._broadcast(payload))
+
+    # ------------------------------------------------------------------
+    # Internal — low-level send helpers
+    # ------------------------------------------------------------------
+
+    def _broadcast_nowait(self, data: str) -> None:
+        """Thread-safe fire-and-forget broadcast to all connected clients."""
         if not self._running or not self._clients or self._loop is None:
             return
-        data = json.dumps(payload)
         asyncio.run_coroutine_threadsafe(self._broadcast(data), self._loop)
 
     async def _broadcast(self, data: str) -> None:

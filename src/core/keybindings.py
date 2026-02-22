@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time as _time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
@@ -24,6 +25,26 @@ from typing import Callable, Dict, List, Optional, Tuple
 from imgui_bundle import imgui, ImVec2
 
 log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Mouse wheel pseudo-keys (not real ImGui keys — negative sentinels)
+# ---------------------------------------------------------------------------
+
+MOUSE_WHEEL_UP   = -1   # pseudo-key for scroll-up bindings
+MOUSE_WHEEL_DOWN = -2   # pseudo-key for scroll-down bindings
+
+# ---------------------------------------------------------------------------
+# Modifier decomposition helper
+# ---------------------------------------------------------------------------
+
+def _split_mods(mods: int) -> List[int]:
+    """Return the individual imgui.Key.mod_* values present in a mods bitmask."""
+    result = []
+    for m in (imgui.Key.mod_ctrl, imgui.Key.mod_shift,
+              imgui.Key.mod_alt, imgui.Key.mod_super):
+        if mods & m:
+            result.append(m)
+    return result
 
 # ---------------------------------------------------------------------------
 # Key chord: (mods, key, repeat)
@@ -122,7 +143,9 @@ class OFS_KeybindingSystem:
         Call once per frame from the main update loop.
         Fires callbacks for pressed key chords.
         ImGui must have processed input before this is called.
+        Sets self.any_key_active = True if any binding fired this frame.
         """
+        self.any_key_active = False
         # Don't fire bindings when a text input widget has focus
         if imgui.get_io().want_capture_keyboard:
             # Allow some bindings even when text is focused? OFS doesn't.
@@ -135,18 +158,53 @@ class OFS_KeybindingSystem:
                     continue
                 fired = False
                 if chord.mods != 0:
-                    fired = imgui.is_key_chord_pressed(chord.mods | chord.key)
+                    if chord.repeat:
+                        # is_key_chord_pressed has no repeat support — fires only
+                        # on initial press.  For held-key repeat we check mods are
+                        # all down and use is_key_pressed(repeat=True) for the key.
+                        mods_down = all(
+                            imgui.is_key_down(m)
+                            for m in _split_mods(chord.mods)
+                        )
+                        if mods_down:
+                            fired = imgui.is_key_pressed(chord.key, repeat=True)
+                    else:
+                        fired = imgui.is_key_chord_pressed(chord.mods | chord.key)
                 else:
-                    fired = imgui.is_key_pressed(
-                        chord.key,
-                        repeat=chord.repeat
-                    )
+                    # mods=0 means "no modifiers" — don't fire when Ctrl/Shift/Alt/Cmd
+                    # is held (prevents prev_frame firing alongside fast_backstep,
+                    # move_actions_left, prev_frame_x3, etc. that use the same base key).
+                    if not (imgui.is_key_down(imgui.Key.mod_ctrl)
+                            or imgui.is_key_down(imgui.Key.mod_shift)
+                            or imgui.is_key_down(imgui.Key.mod_alt)
+                            or imgui.is_key_down(imgui.Key.mod_super)):
+                        fired = imgui.is_key_pressed(
+                            chord.key,
+                            repeat=chord.repeat
+                        )
                 if fired:
+                    self.any_key_active = True
                     try:
                         binding.fn()
                     except Exception as e:
                         log.error(f"Binding '{binding.id}' error: {e}")
                     break  # only fire once per binding per frame
+
+        # Mouse wheel pseudo-key bindings — fire when scroll is not consumed
+        # by any imgui widget (want_capture_mouse is False).
+        scroll = imgui.get_io().mouse_wheel
+        if scroll != 0 and not imgui.get_io().want_capture_mouse:
+            pseudo = MOUSE_WHEEL_UP if scroll > 0 else MOUSE_WHEEL_DOWN
+            for binding in self._bindings.values():
+                active_chords = binding.user_chords if binding.user_chords else binding.chords
+                for chord in active_chords:
+                    if chord.key == pseudo:
+                        self.any_key_active = True
+                        try:
+                            binding.fn()
+                        except Exception as e:
+                            log.error(f"Binding '{binding.id}' scroll error: {e}")
+                        break
 
     # ------------------------------------------------------------------
     # ImGui window
@@ -209,6 +267,11 @@ class OFS_KeybindingSystem:
     # Persistence
 
     def _chord_str(self, chord: KeyChord) -> str:
+        # Handle mouse wheel pseudo-keys
+        if chord.key == MOUSE_WHEEL_UP:
+            return "Scroll Up"
+        if chord.key == MOUSE_WHEEL_DOWN:
+            return "Scroll Down"
         parts = []
         if chord.mods & imgui.Key.mod_ctrl:  parts.append("Ctrl")
         if chord.mods & imgui.Key.mod_shift: parts.append("Shift")

@@ -230,6 +230,12 @@ class OFS_VideoplayerControls:
         if imgui.is_item_hovered():
             imgui.set_tooltip("Increase speed by 10%")
 
+        # Actual measured speed — show when it diverges from requested speed
+        actual = player.ActualSpeed() if hasattr(player, "ActualSpeed") else speed
+        if abs(actual - speed) > 0.02 and not player.IsPaused():
+            imgui.same_line(spacing=6)
+            imgui.text_disabled(f"~{actual:.2f}\u00d7")
+
     # ──────────────────────────────────────────────────────────────────────
     # DrawTimeline — custom heatmap + seek bar with chapter/bookmark overlay
     # ──────────────────────────────────────────────────────────────────────
@@ -239,6 +245,8 @@ class OFS_VideoplayerControls:
         player: OFS_Videoplayer,
         script:  Optional[Funscript],
         chapter_mgr=None,   # ChapterManagerWindow | None
+        always_show_bookmark_labels: bool = False,
+        thumbnail_mgr=None,  # VideoThumbnailManager | None
     ) -> None:
         if not player.VideoLoaded():
             imgui.text_disabled("No video")
@@ -326,6 +334,13 @@ class OFS_VideoplayerControls:
                     ImVec2(bm_x, oy + BAR_H - BM_R - 1), BM_R,
                     0xFFFFFFFF, 8,
                 )
+                if always_show_bookmark_labels and bm.name:
+                    ts = imgui.calc_text_size(bm.name)
+                    dl.add_text(
+                        ImVec2(bm_x - ts.x * 0.5,
+                               oy + BAR_H - BM_R * 2 - ts.y - 2),
+                        0xFFFFFFFF, bm.name,
+                    )
 
         # 6 ── Cursor line (white + dark shadow) ───────────────────────
         cx = ox + W * pct
@@ -357,18 +372,37 @@ class OFS_VideoplayerControls:
             mouse = imgui.get_mouse_pos()
             rel   = (mouse.x - ox) / W
             hover_t = max(0.0, min(duration, rel * duration))
+
+            # Request thumbnail for the hover position
+            if thumbnail_mgr is not None:
+                thumbnail_mgr.RequestFrame(player.VideoPath(), hover_t)
+
             # Vertical hover line
             dl.add_line(
                 ImVec2(mouse.x, oy),
                 ImVec2(mouse.x, oy + BAR_H),
                 0x88FFFFFF, 1.0,
             )
-            # Tooltip: time + delta
+
+            # Tooltip: thumbnail image (if available) + time label
             delta  = hover_t - current
             sign   = "+" if delta >= 0 else ""
-            imgui.set_tooltip(
-                f"{self._format_time(hover_t, duration)}  ({sign}{self._format_delta(abs(delta))})"
+            time_str = (
+                f"{self._format_time(hover_t, duration)}"
+                f"  ({sign}{self._format_delta(abs(delta))})"
             )
+            if thumbnail_mgr is not None and thumbnail_mgr.ready:
+                imgui.begin_tooltip()
+                thumb_w = thumbnail_mgr.width  * 0.6
+                thumb_h = thumbnail_mgr.height * 0.6
+                imgui.image(
+                    imgui.ImTextureRef(thumbnail_mgr.texture),
+                    ImVec2(thumb_w, thumb_h),
+                )
+                imgui.text_disabled(time_str)
+                imgui.end_tooltip()
+            else:
+                imgui.set_tooltip(time_str)
 
         # 9 ── Chapter context menus ───────────────────────────────────
         if chapter_mgr and chapter_mgr._chapters:
@@ -394,7 +428,143 @@ class OFS_VideoplayerControls:
         imgui.text_disabled(self._format_time(current, duration))
 
     # ──────────────────────────────────────────────────────────────────────
-    # Helpers
+    # Heatmap bitmap export
+    # ──────────────────────────────────────────────────────────────────────
+
+    def render_heatmap_to_bytes(
+        self,
+        width: int,
+        height: int,
+        chapters=None,
+        chapter_height: int = 0,
+    ) -> Optional[bytes]:
+        """Return raw RGBA bytes for a heatmap image of (width × total_height).
+
+        Parameters
+        ----------
+        width           Output image width in pixels.
+        height          Height of the heatmap band in pixels.
+        chapters        Optional list of Chapter objects to draw above the heatmap.
+        chapter_height  Height in pixels of the chapter overlay strip (drawn on
+                        top; image total height = height + chapter_height).
+
+        Returns None if no heatmap data is available.
+
+        Mirrors OFS playerControls.RenderHeatmapToBitmap / ...WithChapters.
+        """
+        if not self._heatmap_colours:
+            return None
+
+        total_h = height + chapter_height
+        # RGBA pixel buffer initialised to black-transparent
+        pixels = bytearray(width * total_h * 4)
+
+        def _put(x: int, y: int, r: int, g: int, b: int, a: int = 255) -> None:
+            if 0 <= x < width and 0 <= y < total_h:
+                off = (y * width + x) * 4
+                pixels[off]     = r
+                pixels[off + 1] = g
+                pixels[off + 2] = b
+                pixels[off + 3] = a
+
+        n = len(self._heatmap_colours)
+
+        # ── Heatmap band ──────────────────────────────────────────────────
+        for px in range(width):
+            seg_idx = int(px / width * n)
+            seg_idx = min(seg_idx, n - 1)
+            u32 = self._heatmap_colours[seg_idx]
+            r   = (u32      ) & 0xFF
+            g   = (u32 >>  8) & 0xFF
+            b   = (u32 >> 16) & 0xFF
+            a   = (u32 >> 24) & 0xFF
+            # Draw into heatmap rows (below any chapter strip)
+            y0 = chapter_height
+            for py in range(y0, y0 + height):
+                _put(px, py, r, g, b, a)
+
+        # ── Chapter strip (top) ───────────────────────────────────────────
+        if chapters and chapter_height > 0 and self._heatmap_duration > 0:
+            for ch in chapters:
+                if not hasattr(ch, 'start_time') or not hasattr(ch, 'end_time'):
+                    continue
+                x0 = int(ch.start_time / self._heatmap_duration * width)
+                x1 = int(ch.end_time   / self._heatmap_duration * width)
+                col = getattr(ch, 'color', (0.4, 0.6, 1.0, 1.0))
+                cr  = int(col[0] * 255)
+                cg  = int(col[1] * 255)
+                cb  = int(col[2] * 255)
+                for px in range(max(0, x0), min(width, x1)):
+                    for py in range(chapter_height):
+                        _put(px, py, cr, cg, cb, 255)
+
+        return bytes(pixels)
+
+    def save_heatmap_png(
+        self,
+        path: str,
+        width: int = 1280,
+        height: int = 100,
+        chapters=None,
+    ) -> bool:
+        """Save heatmap to a PNG file.  Requires Pillow (PIL).
+
+        Mirrors OFS saveHeatmap(path, width, height, withChapters).
+
+        Parameters
+        ----------
+        path        Output .png file path.
+        width       Image width in pixels (default 1280).
+        height      Heatmap band height in pixels (default 100).
+        chapters    If provided, an additional chapter strip of `height` pixels
+                    is added on top (total image = width × 2*height).
+        """
+        chapter_height = height if chapters else 0
+        raw = self.render_heatmap_to_bytes(width, height,
+                                           chapters=chapters,
+                                           chapter_height=chapter_height)
+        if raw is None:
+            return False
+        try:
+            from PIL import Image  # type: ignore
+            total_h = height + chapter_height
+            img = Image.frombytes("RGBA", (width, total_h), raw)
+            img.save(path)
+            return True
+        except ImportError:
+            # Fall back to writing a raw PPM-ish file as a basic alternative
+            import struct, zlib
+            total_h = height + chapter_height
+            # Build PNG manually (minimal, no Pillow needed)
+            def _png_chunk(name: bytes, data: bytes) -> bytes:
+                crc = zlib.crc32(name + data) & 0xFFFFFFFF
+                return struct.pack(">I", len(data)) + name + data + struct.pack(">I", crc)
+
+            # Convert RGBA to RGB (PNG RGBA)
+            header = struct.pack(">8sBBIBBBBH",
+                b"\x89PNG\r\n\x1a\n"[1:], 0, 0, 0, 0, 0, 0, 0, 0)  # placeholder
+            ihdr_data = struct.pack(">IIBBBBB", width, total_h, 8, 2, 0, 0, 0)
+            # Actually just use a simple approach via struct
+            sig = b"\x89PNG\r\n\x1a\n"
+            ihdr = _png_chunk(b"IHDR",
+                              struct.pack(">IIBBBBB", width, total_h, 8, 6, 0, 0, 0))
+            # Filter + compress pixel data (RGBA)
+            raw_rows = b""
+            for y in range(total_h):
+                raw_rows += b"\x00"  # filter byte = None
+                raw_rows += raw[y * width * 4 : (y + 1) * width * 4]
+            compressed = zlib.compress(raw_rows, 9)
+            idat = _png_chunk(b"IDAT", compressed)
+            iend = _png_chunk(b"IEND", b"")
+            with open(path, "wb") as f:
+                f.write(sig + ihdr + idat + iend)
+            return True
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).error(f"save_heatmap_png: {exc}")
+            return False
+
+    # ──────────────────────────────────────────────────────────────────────
     # ──────────────────────────────────────────────────────────────────────
 
     @staticmethod

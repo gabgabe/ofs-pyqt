@@ -94,6 +94,29 @@ class StatisticsWindow:
             imgui.text_disabled("No script loaded")
             return
 
+        current_time = player.CurrentTime()  # seconds
+
+        # ── Real-time stats at cursor (mirrors OFS ShowStatisticsWindow) ──
+        front = script.get_action_at_time(current_time, 0.001)
+        if front is not None:
+            behind = script.get_previous_action_behind(front.at / 1000.0)
+        else:
+            behind = script.get_previous_action_behind(current_time)
+            front  = script.get_next_action_ahead(current_time)
+
+        if behind is not None:
+            interval_ms = (current_time - behind.at / 1000.0) * 1000.0
+            imgui.text(f"Interval:  {interval_ms:.2f} ms")
+            if front is not None:
+                duration_s = (front.at - behind.at) / 1000.0
+                delta_pos  = front.pos - behind.pos
+                speed      = abs(delta_pos) / duration_s if duration_s > 0 else 0.0
+                direction  = "\u2191" if delta_pos > 0 else ("\u2193" if delta_pos < 0 else "\u2014")
+                imgui.text(f"Speed:     {speed:.2f} u/s")
+                imgui.text(f"Duration:  {(duration_s * 1000.0):.2f} ms")
+                imgui.text(f"{behind.pos} \u2192 {front.pos} = {abs(delta_pos)} {direction}")
+        imgui.separator()
+
         # Recompute when script content or selection changes
         h = self._script_hash(script)
         if h != self._last_hash or not self._stats_all:

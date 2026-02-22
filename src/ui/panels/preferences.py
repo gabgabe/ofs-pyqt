@@ -57,10 +57,21 @@ class PreferencesWindow:
         # ── Scripting ─────────────────────────────────────────────────
         self.auto_backup_interval: int   = 60    # seconds
         self.show_heatmap:         bool  = True
+        self.show_waveform:        bool  = False
         self.action_radius:        float = 4.0
         self.max_speed_highlight:  float = 500.0   # units/s threshold
         self.highlight_max_speed:  bool  = True
+        # #3 ScaleAudio — amplitude multiplier applied to waveform overlay (1.0 = normal)
+        self.waveform_scale: float = 1.0
+        # #4 WaveformColor tint (RGBA 0–1 stored as list for JSON roundtrip)
+        self.waveform_color: List[float] = [227/255, 66/255, 52/255, 0.42]
+        # #6 MaxSpeed highlight colour
+        self.max_speed_color: List[float] = [0.89, 0.10, 0.10, 0.55]
 
+        # #15 heatmapSettings configurable defaults
+        self.heatmap_default_width:  int = 1280
+        self.heatmap_default_height: int = 100
+        self.heatmap_default_path:   str = ""
         self._languages: List[str] = _discover_languages()
         self._font_buf: str = ""
         self._load()
@@ -124,7 +135,10 @@ class PreferencesWindow:
             if imgui.begin_tab_item("Scripting")[0]:
                 dirty |= self._tab_scripting()
                 imgui.end_tab_item()
-
+            # ── Tab: Heatmap ───────────────────────────────────────────
+            if imgui.begin_tab_item("Heatmap")[0]:
+                dirty |= self._tab_heatmap()
+                imgui.end_tab_item()
             imgui.end_tab_bar()
 
         imgui.spacing()
@@ -141,6 +155,13 @@ class PreferencesWindow:
 
         if dirty:
             self._save()
+            # Hot-apply font scale immediately (no restart needed)
+            try:
+                from imgui_bundle import imgui as _imgui
+                base_font_size = 14  # original compiled font size
+                _imgui.get_io().font_global_scale = self.font_size / base_font_size
+            except Exception:
+                pass
 
     # ──────────────────────────────────────────────────────────────────────
     # Tabs
@@ -195,6 +216,11 @@ class PreferencesWindow:
             self._font_buf = ""
             self.font_override_path = ""
             dirty = True
+
+        if self.font_override_path:
+            imgui.push_style_color(imgui.Col_.text, imgui.ImVec4(1.0, 0.8, 0.2, 1.0))
+            imgui.text_disabled("⚠  Font file change requires restart to apply.")
+            imgui.pop_style_color()
         imgui.spacing()
 
         # Theme
@@ -267,6 +293,16 @@ class PreferencesWindow:
         if c:
             self.show_heatmap = v
             dirty = True
+
+        c, v = imgui.checkbox("Show waveform", self.show_waveform)
+        if c:
+            self.show_waveform = v
+            dirty = True
+        if imgui.is_item_hovered():
+            imgui.set_tooltip(
+                "Overlay audio waveform on the script timeline.\n"
+                "Requires ffmpeg in PATH. Loads in background."
+            )
         imgui.spacing()
 
         imgui.set_next_item_width(80)
@@ -291,5 +327,64 @@ class PreferencesWindow:
             if imgui.is_item_hovered():
                 imgui.set_tooltip(
                     "Speed above this threshold is shown in red on the heatmap")
+            # MaxSpeedColor picker
+            imgui.set_next_item_width(200)
+            col4 = list(self.max_speed_color)
+            while len(col4) < 4:
+                col4.append(1.0)
+            c, new_col = imgui.color_edit4("Max speed colour##msc", col4)
+            if c:
+                self.max_speed_color = list(new_col)
+                dirty = True
+        imgui.spacing()
 
+        # Waveform settings
+        if self.show_waveform:
+            imgui.separator()
+            imgui.text_disabled("Waveform")
+            # ScaleAudio slider
+            imgui.set_next_item_width(160)
+            c, v = imgui.slider_float("Amplitude scale##wvscale",
+                                      self.waveform_scale, 0.1, 5.0, "%.2f")
+            if c:
+                self.waveform_scale = max(0.1, min(5.0, v))
+                dirty = True
+            if imgui.is_item_hovered():
+                imgui.set_tooltip("Vertically scale the waveform amplitude (1.0 = normal)")
+            # WaveformColor tint picker
+            imgui.set_next_item_width(200)
+            col4w = list(self.waveform_color)
+            while len(col4w) < 4:
+                col4w.append(1.0)
+            c, new_wc = imgui.color_edit4("Waveform colour##wvcol", col4w)
+            if c:
+                self.waveform_color = list(new_wc)
+                dirty = True
+        imgui.spacing()
+
+        return dirty
+
+    def _tab_heatmap(self) -> bool:
+        """#15 heatmapSettings — configurable defaults for heatmap export."""
+        dirty = False
+        imgui.set_next_item_width(100)
+        c, v = imgui.input_int("Default width (px)##hmw",
+                               self.heatmap_default_width, 10, 100)
+        if c:
+            self.heatmap_default_width = max(100, v)
+            dirty = True
+        imgui.set_next_item_width(100)
+        c, v = imgui.input_int("Default height (px)##hmh",
+                               self.heatmap_default_height, 5, 20)
+        if c:
+            self.heatmap_default_height = max(10, v)
+            dirty = True
+        imgui.text("Default output path")
+        imgui.set_next_item_width(-1)
+        c, v = imgui.input_text("##hmpath", self.heatmap_default_path)
+        if c:
+            self.heatmap_default_path = v
+            dirty = True
+        if imgui.is_item_hovered():
+            imgui.set_tooltip("Leave empty to use the project folder")
         return dirty

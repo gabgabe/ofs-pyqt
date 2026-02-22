@@ -130,6 +130,7 @@ class SimulatorWindow:
         self._enable_position:     bool = _DEFAULT_STATE["enable_position"]
         self._locked_position:     bool = _DEFAULT_STATE["locked_position"]
         self._vanilla_mode:        bool = False
+        self._spline_mode:         bool = False   # Use Catmull-Rom spline interpolation
 
         # Dragging state
         self._dragging: Optional[str]  = None   # 'p1' | 'p2' | 'both' | None
@@ -304,6 +305,9 @@ class SimulatorWindow:
         _, self._vanilla_mode        = imgui.checkbox("Vanilla mode",  self._vanilla_mode)
         if imgui.is_item_hovered():
             imgui.set_tooltip("Show a simple vertical slider instead")
+        _, self._spline_mode         = imgui.checkbox("Spline mode",   self._spline_mode)
+        if imgui.is_item_hovered():
+            imgui.set_tooltip("Use Catmull-Rom spline interpolation instead of linear")
         imgui.spacing()
 
         if imgui.button("Reset to defaults##srd", ImVec2(-1, 0)):
@@ -313,13 +317,13 @@ class SimulatorWindow:
     # Position calculation
     # ──────────────────────────────────────────────────────────────────────
 
-    @staticmethod
-    def _get_position(player: OFS_Videoplayer, script: Optional[Funscript]) -> float:
+    def _get_position(self, player: OFS_Videoplayer, script: Optional[Funscript]) -> float:
         if script is None or not player.VideoLoaded():
             return 0.0
-        t = player.CurrentTime()
-        # Use Funscript's built-in interpolation
-        return script.actions.interpolate(t * 1000.0)
+        t_ms = player.CurrentTime() * 1000.0
+        if self._spline_mode:
+            return script.actions.interpolate_spline(t_ms)
+        return script.actions.interpolate(t_ms)
 
     # ──────────────────────────────────────────────────────────────────────
     # Drag handling (P1, P2, centre)

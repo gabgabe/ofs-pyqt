@@ -17,6 +17,7 @@ import logging
 import os
 import platform
 import threading
+import time as _time
 from typing import Callable, Optional
 
 log = logging.getLogger(__name__)
@@ -150,6 +151,12 @@ class OFS_Videoplayer:
         self._video_loaded: bool = False
         self._file_path: str   = ""
         self._logical_pos: float = 0.0  # mirrors logicalPosition
+        self._last_seek_time: float = 0.0  # monotonic ts of last SeekFrames call
+
+        # Actual measured playback speed (EMA of observed pos-change / wall-time)
+        self._actual_speed: float = 1.0
+        self._last_pct_for_speed: float = 0.0   # percent_pos at last measurement
+        self._last_pct_wall: float = 0.0         # wall time at last measurement
 
         # Render update signal — set from mpv callback thread, cleared by main thread
         # Mirrors OFS SDL_atomic_t renderUpdate
@@ -245,7 +252,19 @@ class OFS_Videoplayer:
         @self._mpv.property_observer("percent-pos")
         def _on_pct(name, value):
             if value is not None:
-                self._percent_pos = float(value) / 100.0
+                new_pct = float(value) / 100.0
+                now = _time.monotonic()
+                # Compute actual speed: Δpos * duration / Δwall_time
+                dt = now - self._last_pct_wall
+                dp = new_pct - self._last_pct_for_speed
+                if dt > 0.01 and self._duration > 0 and dp > 0:
+                    measured = (dp * self._duration) / dt
+                    # EMA with α=0.2 — smooth out single-frame jitter
+                    self._actual_speed = 0.8 * self._actual_speed + 0.2 * measured
+                if not self._paused:
+                    self._last_pct_for_speed = new_pct
+                    self._last_pct_wall = now
+                self._percent_pos = new_pct
                 if self.on_time_change:
                     self.on_time_change(self._duration * self._percent_pos)
 
@@ -253,6 +272,11 @@ class OFS_Videoplayer:
         def _on_pause(name, value):
             if value is not None:
                 self._paused = bool(value)
+                if self._paused:
+                    # Reset tracking so speed doesn't linger from old position
+                    self._last_pct_for_speed = self._percent_pos
+                    self._last_pct_wall = _time.monotonic()
+                    self._actual_speed = self._speed
                 if self.on_pause_change:
                     self.on_pause_change(self._paused)
 
@@ -473,6 +497,14 @@ class OFS_Videoplayer:
     def SeekFrames(self, offset: int) -> None:
         if not self._mpv:
             return
+        # Rate-limit: don't flood mpv's command queue faster than the video
+        # frame rate.  Without this, holding a key causes a burst of queued
+        # frame-step commands that fire all at once → stuttering.
+        now = _time.monotonic()
+        min_interval = self.FrameTime() * abs(offset) * 0.80
+        if now - self._last_seek_time < min_interval:
+            return
+        self._last_seek_time = now
         try:
             cmd = "frame-step" if offset > 0 else "frame-back-step"
             for _ in range(abs(offset)):
@@ -562,6 +594,7 @@ class OFS_Videoplayer:
     def Fps(self)         -> float: return self._fps if self._fps > 0 else 30.0
     def FrameTime(self)   -> float: return 1.0 / self.Fps()
     def CurrentSpeed(self)-> float: return self._speed
+    def ActualSpeed(self) -> float: return self._actual_speed
     def Volume(self)      -> float: return self._volume
     def VideoPath(self)   -> str:   return self._file_path
 

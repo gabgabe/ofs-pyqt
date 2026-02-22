@@ -221,6 +221,59 @@ class FunscriptActionArray:
         t = (at_ms - a.at) / (b.at - a.at)
         return a.pos + t * (b.pos - a.pos)
 
+    def interpolate_spline(self, at_ms: float) -> float:
+        """Catmull-Rom spline interpolation of position at at_ms.
+
+        Mirrors FunscriptSpline::catmul_rom_spline_alt() from OFS.
+        Returns value in 0-100 range (float).
+        """
+        acts = self._actions
+        n = len(acts)
+        if n == 0:
+            return 50.0
+        if n == 1:
+            return float(acts[0].pos)
+
+        times = [a.at for a in acts]
+        # find i1: index of last action <= at_ms
+        idx = bisect.bisect_right(times, at_ms) - 1
+        idx = max(0, min(n - 2, idx))
+
+        i0 = max(0, idx - 1)
+        i1 = idx
+        i2 = min(n - 1, idx + 1)
+        i3 = min(n - 1, idx + 2)
+
+        p1, p2 = acts[i1], acts[i2]
+
+        # If equal positions, no spline needed
+        if p1.pos == p2.pos:
+            return float(p1.pos)
+
+        dt = p2.at - p1.at
+        if dt <= 0:
+            return float(p2.pos)
+
+        # t in [0, 1]
+        t = (at_ms - p1.at) / dt
+        t = max(0.0, min(1.0, t))
+
+        # Catmull-Rom using 0-1 normalised positions
+        v0 = acts[i0].pos / 100.0
+        v1 = acts[i1].pos / 100.0
+        v2 = acts[i2].pos / 100.0
+        v3 = acts[i3].pos / 100.0
+
+        # glm::catmullRom formula
+        t2, t3 = t * t, t * t * t
+        result = 0.5 * (
+            (2.0 * v1)
+            + (-v0 + v2) * t
+            + (2.0 * v0 - 5.0 * v1 + 4.0 * v2 - v3) * t2
+            + (-v0 + 3.0 * v1 - 3.0 * v2 + v3) * t3
+        )
+        return max(0.0, min(100.0, result * 100.0))
+
     # ---- helpers ----
 
     def get_last_stroke(self, before_time_s: float) -> List[FunscriptAction]:
@@ -316,6 +369,23 @@ class Funscript:
         self.undo_system: Optional["FunscriptUndoSystem"] = None
         # Callback list for actions-changed notifications (Qt-independent)
         self._actions_changed_callbacks: List = []
+
+    # ============================================================
+    # Title management
+    # ============================================================
+
+    def set_title(self, new_title: str) -> None:
+        """Change the script title and dispatch FUNSCRIPT_NAME_CHANGED."""
+        if new_title == self.title:
+            return
+        old_title = self.title
+        self.title = new_title
+        try:
+            from .events import EV, OFS_Events
+            EV.dispatch(OFS_Events.FUNSCRIPT_NAME_CHANGED,
+                        script=self, old_title=old_title, new_title=new_title)
+        except Exception:
+            pass
 
     # ============================================================
     # I/O
@@ -631,6 +701,26 @@ class Funscript:
 
     def get_last_stroke(self, before_time_s: float) -> List[FunscriptAction]:
         return self.actions.get_last_stroke(before_time_s)
+
+    def get_position_at_time(self, time_s: float) -> float:
+        """Return linear-interpolated position at time_s as float in [0.0, 1.0].
+
+        Mirrors OFS Funscript::GetPositionAtTime() which returns a 0-1 range
+        (position / 100.0) used by the simulator and scripting overlay.
+        """
+        return self.actions.interpolate(time_s * 1000.0) / 100.0
+
+    def add_multiple_actions(self, new_actions: List[FunscriptAction]) -> None:
+        """Batch-insert a list of actions efficiently (single sort pass).
+
+        Mirrors OFS Funscript::AddMultipleActions — avoids O(n²) repeated
+        bisect insertions when adding many points at once (e.g. from recording
+        or paste operations).
+        """
+        merged = {a.at: a for a in self.actions._actions}
+        for a in new_actions:
+            merged[a.at] = a
+        self.actions._actions = sorted(merged.values(), key=lambda a: a.at)
 
     # ============================================================
     # Speed / Heatmap

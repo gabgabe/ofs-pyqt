@@ -19,6 +19,7 @@ Exposed methods called by app:
 
 from __future__ import annotations
 
+import math
 import time
 from enum import IntEnum
 from typing import Optional
@@ -38,6 +39,56 @@ class ScriptingModeEnum(IntEnum):
     DYNAMIC     = 3
 
 
+# ── Overlay modes (mirrors OFS ScriptingOverlayModes) ─────────────────────────
+class OverlayModeEnum(IntEnum):
+    FRAME = 0
+    TEMPO = 1
+    EMPTY = 2
+
+
+# Beat subdivisions used by Tempo overlay (matches OFS beatMultiples[])
+_BEAT_MULTIPLES = [
+    4.0,              # whole measures
+    4.0 * (1 / 2),   # 2nds
+    4.0 * (1 / 4),   # 4ths
+    4.0 * (1 / 8),   # 8ths
+    4.0 * (1 / 12),  # 12ths
+    4.0 * (1 / 16),  # 16ths
+    4.0 * (1 / 24),  # 24ths
+    4.0 * (1 / 32),  # 32nds
+    4.0 * (1 / 48),  # 48ths
+    4.0 * (1 / 64),  # 64ths
+]
+_BEAT_NAMES = [
+    "Whole measures", "2nds", "4ths", "8ths",
+    "12ths", "16ths", "24ths", "32nds", "48ths", "64ths",
+]
+
+
+def _tempo_beat_time(bpm: float, measure_idx: int) -> float:
+    """Seconds per subdivided beat for given BPM and subdivision index."""
+    return (60.0 / max(1.0, bpm)) * _BEAT_MULTIPLES[measure_idx]
+
+
+def _get_next_tempo_position(beat_time: float, current_time: float,
+                             beat_offset: float) -> float:
+    """Next beat boundary strictly after current_time (mirrors OFS GetNextPosition)."""
+    beat_idx = math.floor((current_time - beat_offset) / beat_time) + 1.0
+    new_pos = beat_idx * beat_time + beat_offset
+    if abs(new_pos - current_time) <= 0.001:
+        new_pos += beat_time
+    return new_pos
+
+
+def _get_prev_tempo_position(beat_time: float, current_time: float,
+                             beat_offset: float) -> float:
+    """Previous beat boundary strictly before current_time (mirrors OFS GetPreviousPosition)."""
+    beat_idx = math.ceil((current_time - beat_offset) / beat_time) - 1.0
+    new_pos = beat_idx * beat_time + beat_offset
+    if abs(new_pos - current_time) <= 0.001:
+        new_pos -= beat_time
+    return new_pos
+
 class ScriptingMode:
     """Python port of OFS_ScriptingMode."""
 
@@ -53,6 +104,12 @@ class ScriptingMode:
 
         # Recording mode
         self._recording: bool = False
+        # 0 = HoldSample (continuous), 1 = FrameByFrame
+        self._rec_type: int    = 0
+        self._rec_active_pos: float = 50.0   # 0-100, fed externally (e.g. from simulator)
+        self._rec_has_pos:    bool  = False   # True when simulator is feeding values
+        self._rec_last_at:    float = -1.0    # last recorded time (s) to avoid duplicates
+        self._rec_interval_s: float = 1.0 / 60.0  # HoldSample interval (default 60 Hz)
 
         # Alternating mode state
         self._alt_next_inverted:    bool = False  # False=top/original, True=bottom/inverted
@@ -61,11 +118,26 @@ class ScriptingMode:
         self._alt_fixed_bottom:     int  = 0
         self._alt_fixed_top:        int  = 100
 
+        # Dynamic Injection mode settings (OFS: DynamicInjectionMode)
+        self._dyn_target_speed: float = 300.0   # units/s  (MinSpeed=50, MaxSpeed=1000)
+        self._dyn_direction_bias: float = 0.0   # -0.9 .. 0.9
+        self._dyn_top_bottom: int = 1            # +1 = top, -1 = bottom
+
         # Frame step speed multiplier
         self._step_size: int = 1
 
         # Action insert delay offset (OFS: state.actionInsertDelayMs)
         self._action_delay_ms: int = 0
+
+        # ── Overlay mode (mirrors OFS ScriptingOverlayModes) ──────────────
+        self.overlay_mode: OverlayModeEnum = OverlayModeEnum.FRAME
+        # Frame overlay settings
+        self._frame_fps_override: bool  = False
+        self._frame_fps_value:    float = 30.0   # fps to use when override enabled
+        # Tempo overlay settings
+        self._tempo_bpm:         float = 120.0
+        self._tempo_offset_s:    float = 0.0     # beat offset in seconds
+        self._tempo_measure_idx: int   = 0       # index into _BEAT_MULTIPLES
 
         self._player: Optional[OFS_Videoplayer] = None
         self._undo:   Optional[UndoSystem]      = None
@@ -91,23 +163,56 @@ class ScriptingMode:
     # ──────────────────────────────────────────────────────────────────────
 
     def LogicalFrameTime(self) -> float:
-        """Seconds per single step."""
+        """Seconds per single step (respects Frame overlay FPS override)."""
+        if (self.overlay_mode == OverlayModeEnum.FRAME
+                and self._frame_fps_override and self._frame_fps_value > 0):
+            return (1.0 / self._frame_fps_value) * self._step_size
         if not self._player or not self._player.VideoLoaded():
             return 1.0 / 30.0
         return self._player.FrameTime() * self._step_size
 
     def SteppingIntervalForward(self, t: float) -> float:
+        """Seconds to advance for one step forward (overlay-aware)."""
+        if self.overlay_mode == OverlayModeEnum.TEMPO:
+            bt = _tempo_beat_time(self._tempo_bpm, self._tempo_measure_idx)
+            return _get_next_tempo_position(bt, t, self._tempo_offset_s) - t
         return self.LogicalFrameTime()
 
     def SteppingIntervalBackward(self, t: float) -> float:
+        """Seconds to rewind for one step backward (overlay-aware)."""
+        if self.overlay_mode == OverlayModeEnum.TEMPO:
+            bt = _tempo_beat_time(self._tempo_bpm, self._tempo_measure_idx)
+            return _get_prev_tempo_position(bt, t, self._tempo_offset_s) - t
         return -self.LogicalFrameTime()
 
     def PreviousFrame(self) -> None:
-        if self._player:
+        if not self._player:
+            return
+        if self.overlay_mode == OverlayModeEnum.TEMPO:
+            t = self._player.CurrentTime()
+            bt = _tempo_beat_time(self._tempo_bpm, self._tempo_measure_idx)
+            self._player.SetPositionExact(
+                _get_prev_tempo_position(bt, t, self._tempo_offset_s))
+        elif (self.overlay_mode == OverlayModeEnum.FRAME
+              and self._frame_fps_override and self._frame_fps_value > 0):
+            self._player.SeekRelative(
+                -(1.0 / self._frame_fps_value) * self._step_size)
+        else:
             self._player.SeekFrames(-self._step_size)
 
     def NextFrame(self) -> None:
-        if self._player:
+        if not self._player:
+            return
+        if self.overlay_mode == OverlayModeEnum.TEMPO:
+            t = self._player.CurrentTime()
+            bt = _tempo_beat_time(self._tempo_bpm, self._tempo_measure_idx)
+            self._player.SetPositionExact(
+                _get_next_tempo_position(bt, t, self._tempo_offset_s))
+        elif (self.overlay_mode == OverlayModeEnum.FRAME
+              and self._frame_fps_override and self._frame_fps_value > 0):
+            self._player.SeekRelative(
+                (1.0 / self._frame_fps_value) * self._step_size)
+        else:
             self._player.SeekFrames(self._step_size)
 
     # ──────────────────────────────────────────────────────────────────────
@@ -130,6 +235,35 @@ class ScriptingMode:
         # Alternating mode: override position
         if self.mode == ScriptingModeEnum.ALTERNATING:
             action = self._apply_alternating(s, action)
+
+        # Dynamic injection mode: auto-insert a midpoint action
+        if self.mode == ScriptingModeEnum.DYNAMIC:
+            t_sec = action.at / 1000.0
+            behind = s.actions.get_previous_action_behind(t_sec - 0.001)
+            if behind is not None:
+                dt = t_sec - behind.at / 1000.0
+                # midpoint with direction bias
+                inject_at_s = (
+                    behind.at / 1000.0
+                    + dt * 0.5
+                    + dt * 0.5 * self._dyn_direction_bias
+                )
+                inject_dur = inject_at_s - behind.at / 1000.0
+                inject_pos = max(
+                    0,
+                    min(
+                        100,
+                        int(round(
+                            behind.pos
+                            + self._dyn_top_bottom
+                            * inject_dur
+                            * self._dyn_target_speed
+                        )),
+                    ),
+                )
+                inject_ms = int(inject_at_s * 1000)
+                if behind.at < inject_ms < action.at:
+                    s.add_action(FunscriptAction(inject_ms, inject_pos))
 
         existing = s.get_action_at_time(action.at / 1000.0, ft)
         if existing:
@@ -163,6 +297,13 @@ class ScriptingMode:
                 pos = 100 - pos
         return FunscriptAction(action.at, max(0, min(100, pos)))
 
+    def set_active_position(self, value: float, active: bool) -> None:
+        """Feed 0-100 position from an external source (e.g. Simulator).
+        Call every frame; set active=False when the source is not pointing at it."""
+        if active:
+            self._rec_active_pos = value
+        self._rec_has_pos = active
+
     def Undo(self) -> None:
         if self.mode == ScriptingModeEnum.ALTERNATING and not self._alt_context_sensitive:
             self._alt_next_inverted = not self._alt_next_inverted
@@ -185,10 +326,34 @@ class ScriptingMode:
             return
         if not self._recording or self._player.IsPaused():
             return
-        # OFS records mouse Y position as action
-        io = imgui.get_io()
-        # Normalise mouse Y in window to 0..100
-        # (Stubbed: real impl maps mouse to funscript position)
+        if not self._rec_has_pos:
+            return
+
+        t = self._player.CurrentTime()
+
+        if self._rec_type == 0:  # HoldSample — continuous at _rec_interval_s
+            if abs(t - self._rec_last_at) < self._rec_interval_s:
+                return
+
+        # FrameByFrame: same as HoldSample but interval = 1 frame
+        # (both end up here; difference is only in interval)
+        at_ms = int(t * 1000) + self._action_delay_ms
+        if at_ms <= 0:
+            return
+        pos = max(0, min(100, int(round(self._rec_active_pos))))
+        new_act = FunscriptAction(at_ms, pos)
+
+        existing = s.get_action_at_time(t, self._player.FrameTime() * 0.5)
+        if existing is None:
+            if self._undo:
+                self._undo.snapshot(StateType.ADD_ACTION, s)
+            s.add_action(new_act)
+        elif existing.pos != pos:
+            if self._undo:
+                self._undo.snapshot(StateType.MOVE_ACTION, s)
+            s.edit_action(existing, FunscriptAction(existing.at, pos))
+
+        self._rec_last_at = t
 
     # ──────────────────────────────────────────────────────────────────────
     # Show
@@ -215,6 +380,46 @@ class ScriptingMode:
             self._show_recording()
         elif self.mode == ScriptingModeEnum.ALTERNATING:
             self._show_alternating()
+        elif self.mode == ScriptingModeEnum.DYNAMIC:
+            self._show_dynamic()
+
+        # ── Overlay mode ──────────────────────────────────────────────────
+        imgui.spacing()
+        imgui.separator()
+        imgui.spacing()
+
+        overlays = ["Frame", "Tempo", "Empty"]
+        cur_ov = int(self.overlay_mode)
+        imgui.set_next_item_width(-1)
+        ov_changed, new_ov = imgui.combo("##overlay", cur_ov, overlays)
+        if ov_changed:
+            self.overlay_mode = OverlayModeEnum(new_ov)
+        if imgui.is_item_hovered():
+            imgui.set_tooltip(
+                "Timeline overlay:\n"
+                "  Frame — vertical frame-tick lines\n"
+                "  Tempo — BPM beat grid\n"
+                "  Empty — no grid"
+            )
+
+        if self.overlay_mode == OverlayModeEnum.FRAME:
+            self._show_frame_settings(player)
+        elif self.overlay_mode == OverlayModeEnum.TEMPO:
+            self._show_tempo_settings()
+
+        # ── Global action offset ms ───────────────────────────────────────
+        imgui.spacing()
+        imgui.separator()
+        imgui.spacing()
+        imgui.set_next_item_width(-1)
+        changed_d, delay = imgui.drag_int(
+            "Offset ms##gdelay", self._action_delay_ms, 1.0, -500, 500)
+        if changed_d:
+            self._action_delay_ms = max(-500, min(500, delay))
+        if imgui.is_item_hovered():
+            imgui.begin_tooltip()
+            imgui.text("Offset (ms) applied to inserted actions when the video is playing.")
+            imgui.end_tooltip()
 
     def _show_normal(self) -> None:
         imgui.text_disabled("Normal mode")
@@ -224,27 +429,53 @@ class ScriptingMode:
         changed, val = imgui.input_int("Step size", self._step_size, 1, 1)
         if changed:
             self._step_size = max(1, min(60, val))
-        imgui.spacing()
-        imgui.separator()
-        imgui.spacing()
-        imgui.set_next_item_width(-1)
-        changed2, delay = imgui.drag_int(
-            "Offset ms##delay", self._action_delay_ms, 1.0, -500, 500)
-        if changed2:
-            self._action_delay_ms = max(-500, min(500, delay))
-        if imgui.is_item_hovered():
-            imgui.begin_tooltip()
-            imgui.text("Offset in milliseconds applied to actions\n"
-                       "when inserting while the video is playing.")
-            imgui.end_tooltip()
 
     def _show_recording(self) -> None:
+        # Record / Stop button
         col = ImVec4(0.9, 0.2, 0.2, 1.0) if self._recording else ImVec4(0.2, 0.7, 0.2, 1.0)
         imgui.push_style_color(imgui.Col_.button, col)
         label = fa.ICON_FA_STOP + " Stop" if self._recording else fa.ICON_FA_CIRCLE + " Record"
         if imgui.button(label, ImVec2(-1, 0)):
             self._recording = not self._recording
+            self._rec_last_at = -1.0
         imgui.pop_style_color()
+
+        imgui.spacing()
+        imgui.separator()
+        imgui.spacing()
+
+        # Recording type
+        types = ["Hold sample (continuous)", "Frame-by-frame"]
+        imgui.set_next_item_width(-1)
+        changed, self._rec_type = imgui.combo("##rectype", self._rec_type, types)
+
+        if self._rec_type == 0:  # HoldSample: configurable Hz
+            imgui.spacing()
+            rate = 1.0 / self._rec_interval_s if self._rec_interval_s > 0 else 60.0
+            imgui.set_next_item_width(-1)
+            c, rate = imgui.slider_float("##rechz", rate, 10.0, 240.0, "%.0f Hz")
+            if c:
+                self._rec_interval_s = 1.0 / max(1.0, rate)
+        else:  # FrameByFrame: use logical frame time
+            if self._player and self._player.VideoLoaded():
+                self._rec_interval_s = self._player.FrameTime()
+
+        imgui.spacing()
+        imgui.separator()
+        imgui.spacing()
+
+        # Status indicator
+        if self._recording:
+            if self._rec_has_pos:
+                imgui.push_style_color(imgui.Col_.text, ImVec4(0.3, 1.0, 0.3, 1.0))
+                imgui.text(f"Pos: {self._rec_active_pos:.0f}")
+            else:
+                imgui.push_style_color(imgui.Col_.text, ImVec4(1.0, 0.7, 0.2, 1.0))
+                imgui.text("Waiting for position input...")
+            imgui.pop_style_color()
+            imgui.text_disabled("(Move mouse over Simulator window)")
+        else:
+            imgui.text_disabled("Drag mouse in the Simulator window while recording.")
 
     def _show_alternating(self) -> None:
         # Status hint
@@ -287,3 +518,108 @@ class ScriptingMode:
         changed, val = imgui.input_int("Step size##alt", self._step_size, 1, 1)
         if changed:
             self._step_size = max(1, min(60, val))
+
+    def _show_dynamic(self) -> None:
+        """DynamicInjectionMode UI — mirrors DynamicInjectionMode::DrawModeSettings."""
+        imgui.text_disabled("Dynamic Injection")
+        imgui.spacing()
+
+        # Target speed slider (MinSpeed=50, MaxSpeed=1000)
+        imgui.set_next_item_width(-1)
+        c, v = imgui.slider_float(
+            "##dynspeed", self._dyn_target_speed,
+            50.0, 1000.0, "Target speed: %.0f u/s",
+            imgui.SliderFlags_.always_clamp,
+        )
+        if c:
+            self._dyn_target_speed = round(max(50.0, min(1000.0, v)))
+        if imgui.is_item_hovered():
+            imgui.set_tooltip(
+                "Speed (units/second) used to compute the injected midpoint action."
+            )
+
+        # Up/Down bias slider
+        imgui.set_next_item_width(-1)
+        c, v = imgui.slider_float(
+            "##dynbias", self._dyn_direction_bias,
+            -0.9, 0.9, "Up/Down bias: %.2f",
+            imgui.SliderFlags_.always_clamp,
+        )
+        if c:
+            self._dyn_direction_bias = v
+        if imgui.is_item_hovered():
+            imgui.set_tooltip(
+                "Shifts the injected midpoint earlier (<0) or later (>0)."
+            )
+
+        imgui.spacing()
+
+        # Top / Bottom radio buttons
+        avail = imgui.get_content_region_avail().x
+        imgui.set_next_item_width(avail * 0.5)
+        if imgui.radio_button("Top##dyntop",    self._dyn_top_bottom == 1):
+            self._dyn_top_bottom = 1
+        imgui.same_line()
+        if imgui.radio_button("Bottom##dynbot", self._dyn_top_bottom == -1):
+            self._dyn_top_bottom = -1
+
+        imgui.spacing()
+        imgui.separator()
+        imgui.spacing()
+
+        _, self._snap_to_frame = imgui.checkbox("Snap to frame##dyn", self._snap_to_frame)
+        imgui.set_next_item_width(80)
+        changed, val = imgui.input_int("Step size##dyn", self._step_size, 1, 1)
+        if changed:
+            self._step_size = max(1, min(60, val))
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Overlay settings sub-panels
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _show_frame_settings(self, player: OFS_Videoplayer) -> None:
+        """Frame overlay settings (OFS FrameOverlay::DrawSettings)."""
+        imgui.spacing()
+        ch, self._frame_fps_override = imgui.checkbox(
+            "FPS override##fov", self._frame_fps_override)
+        if ch and self._frame_fps_override and player and player.VideoLoaded():
+            self._frame_fps_value = player.Fps()
+        if self._frame_fps_override:
+            imgui.set_next_item_width(-1)
+            c, v = imgui.input_float(
+                "##fpsov_val", self._frame_fps_value, 1.0, 10.0, "%.2f fps")
+            if c:
+                self._frame_fps_value = max(1.0, min(300.0, v))
+                if player and player.VideoLoaded():
+                    # snap playhead to nearest overridden frame
+                    ft = 1.0 / self._frame_fps_value
+                    t = player.CurrentTime()
+                    snapped = round(t / ft) * ft
+                    player.SetPositionExact(snapped, True)
+        if imgui.is_item_hovered():
+            imgui.set_tooltip("Override the video FPS for frame-stepping")
+
+    def _show_tempo_settings(self) -> None:
+        """Tempo overlay settings (OFS TempoOverlay::DrawSettings)."""
+        imgui.spacing()
+        # BPM input
+        c, v = imgui.input_float("BPM##tmpo", self._tempo_bpm, 1.0, 10.0, "%.2f")
+        if c:
+            self._tempo_bpm = max(1.0, v)
+        # Beat offset drag
+        imgui.set_next_item_width(-1)
+        c2, v2 = imgui.drag_float(
+            "Offset##tmpo_off", self._tempo_offset_s,
+            0.001, -10.0, 10.0, "%.3f s",
+            imgui.SliderFlags_.always_clamp)
+        if c2:
+            self._tempo_offset_s = v2
+        # Subdivision combo (Snap)
+        imgui.set_next_item_width(-1)
+        ch3, new_idx = imgui.combo("Snap##tmpo_snap",
+                                   self._tempo_measure_idx, _BEAT_NAMES)
+        if ch3:
+            self._tempo_measure_idx = new_idx
+        # Interval display
+        bt = _tempo_beat_time(self._tempo_bpm, self._tempo_measure_idx)
+        imgui.text_disabled(f"Interval: {bt * 1000.0:.2f} ms")

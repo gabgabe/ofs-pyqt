@@ -39,6 +39,8 @@ class OFS_Events:
 
     # Funscript
     FUNSCRIPT_CHANGED     = "FunscriptActionsChanged"
+    FUNSCRIPT_NAME_CHANGED = "FunscriptNameChanged"   # dispatched when title is renamed
+    FUNSCRIPT_REMOVED     = "FunscriptRemoved"        # dispatched when a script is removed
     PROJECT_LOADED        = "ProjectLoaded"
     METADATA_CHANGED      = "MetadataChanged"
 

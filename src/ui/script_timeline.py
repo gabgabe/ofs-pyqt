@@ -59,6 +59,26 @@ MAX_DOT_RADIUS      = 7.0
 # Default visible time window (seconds)
 DEFAULT_VISIBLE_SECS = 5.0
 
+# ── Tempo overlay beat colors (mirrors OFS beatMultipleColor[]) ───────────────
+_TEMPO_BEAT_COLORS = [
+    _col32(0xbb / 255, 0xbe / 255, 0xbc / 255, 1.0),   # whole measures
+    _col32(0x53 / 255, 0xd3 / 255, 0xdf / 255, 1.0),   # 2nds
+    _col32(0xc1 / 255, 0x65 / 255, 0x77 / 255, 1.0),   # 4ths
+    _col32(0x24 / 255, 0x54 / 255, 0x99 / 255, 1.0),   # 8ths
+    _col32(0xc8 / 255, 0x86 / 255, 0xee / 255, 1.0),   # 12ths
+    _col32(0xd2 / 255, 0xcc / 255, 0x23 / 255, 1.0),   # 16ths
+    _col32(0xea / 255, 0x8d / 255, 0xe0 / 255, 1.0),   # 24ths
+    _col32(0xe7 / 255, 0x97 / 255, 0x5c / 255, 1.0),   # 32nds
+    _col32(0xeb / 255, 0x38 / 255, 0x99 / 255, 1.0),   # 48ths
+    _col32(0x23 / 255, 0xd2 / 255, 0x54 / 255, 1.0),   # 64ths
+]
+# Beat subdivisions matching OFS beatMultiples[]
+_BEAT_MULTIPLES = [
+    4.0, 4.0 * (1 / 2), 4.0 * (1 / 4),  4.0 * (1 / 8),
+    4.0 * (1 / 12), 4.0 * (1 / 16), 4.0 * (1 / 24),
+    4.0 * (1 / 32), 4.0 * (1 / 48), 4.0 * (1 / 64),
+]
+
 
 class ScriptTimeline:
     """
@@ -92,17 +112,47 @@ class ScriptTimeline:
         # Context menu: which track was right-clicked
         self._ctx_track_idx: int = 0
 
+        # Playhead scrub drag (clicking/dragging the top ruler zone)
+        self._scrubbing: bool = False
+        self._scrub_was_paused: bool = True
+
         # Follow playback cursor
         self.follow_cursor: bool = True
+
+        # Waveform overlay (set externally by app; loaded async)
+        self.waveform = None          # WaveformData | None
+        self.show_waveform: bool = False
 
         # Rendering options (mirrors OFS BaseOverlay)
         self.show_action_lines: bool = True
         self.show_action_points: bool = True
         self.spline_mode: bool = False  # False=linear, True=spline
-        
-        # Track heights
-        self._track_h: float = 0.0   # computed per frame
 
+        # #7 SyncLineEnable — draw a coloured vertical line at the current time
+        # in addition to the white playhead (useful for recording sync)
+        self.sync_line_enable: bool = False
+        self.sync_line_color: tuple = (1.0, 0.2, 0.2, 0.8)  # RGBA 0-1
+
+        # #6 MaxSpeedHighlight — overlay red highlight for very-fast segments
+        self.show_max_speed_highlight: bool = True
+        self.max_speed_color: tuple = (0.89, 0.10, 0.10, 0.55)  # RGBA 0-1
+        self.max_speed_threshold: float = 500.0  # units/s
+
+        # #3 ScaleAudio — amplitude multiplier for waveform drawing
+        self.waveform_scale: float = 1.0
+
+        # #4 WaveformColor tint (RGBA 0-1)
+        self.waveform_color: tuple = (227/255, 66/255, 52/255, 0.42)
+
+        # ── Overlay mode params (synced from ScriptingMode each frame) ────
+        # 0=FRAME, 1=TEMPO, 2=EMPTY
+        self.overlay_mode: int   = 0
+        # Frame overlay
+        self.overlay_fps: float  = 30.0   # effective fps (after possible override)
+        # Tempo overlay
+        self.overlay_bpm: float              = 120.0
+        self.overlay_tempo_offset_s: float   = 0.0
+        self.overlay_tempo_measure_idx: int  = 0
         # Cached window rect
         self._win_pos: ImVec2 = ImVec2(0, 0)
         self._win_size: ImVec2 = ImVec2(0, 0)
@@ -211,6 +261,16 @@ class ScriptTimeline:
                     _col32(1.0, 1.0, 1.0, 1.0), 4.0,
                 )
 
+            # ── SyncLine — optional coloured vertical line at current time ───
+            if self.sync_line_enable and player.VideoLoaded() and duration > 0:
+                cx_s = self._time_to_x(current, win_pos.x, avail.x, t_start, t_end)
+                sl_col = _col32(*self.sync_line_color)
+                dl.add_line(
+                    ImVec2(cx_s, track_y),
+                    ImVec2(cx_s, track_y + self._track_h),
+                    sl_col, 2.5,
+                )
+
             # ── Selection box — only on active track (OFS behaviour) ──────────
             if self._is_selecting and is_active:
                 vt = t_end - t_start
@@ -261,6 +321,11 @@ class ScriptTimeline:
                     "Show action points", "", self.show_action_points)
                 _, self.spline_mode        = imgui.menu_item(
                     "Spline mode",        "", self.spline_mode)
+                imgui.separator()
+                _, self.sync_line_enable   = imgui.menu_item(
+                    "Sync line",          "", self.sync_line_enable)
+                _, self.show_max_speed_highlight = imgui.menu_item(
+                    "Highlight max speed", "", self.show_max_speed_highlight)
                 imgui.end_menu()
 
             if imgui.begin_menu("Scripts"):
@@ -315,6 +380,97 @@ class ScriptTimeline:
                 COL_HEIGHT_GUIDE, 1.0
             )
 
+    def _draw_frame_overlay_grid(
+        self, dl,
+        x: float, y: float, w: float, h: float,
+        t_start: float, t_end: float,
+        fps: float,
+    ) -> None:
+        """Draw vertical frame-tick lines on a track (mirrors OFS FrameOverlay).
+
+        Two passes:
+          1. Thin grey lines every frame (fade in as user zooms in).
+          2. Thicker lines every round(fps * 0.1) frames (time dividers).
+        """
+        visible_time = t_end - t_start
+        if visible_time <= 0 or fps <= 0:
+            return
+        frame_time = 1.0 / fps
+
+        # ── 1. Per-frame tick lines ───────────────────────────────────────
+        MAX_VISIBLE = 400.0
+        visible_frames = visible_time / frame_time
+        if visible_frames < MAX_VISIBLE * 0.75:
+            alpha = int(255 * (1.0 - visible_frames / MAX_VISIBLE))
+            col = _col32(80 / 255, 80 / 255, 80 / 255, alpha / 255)
+            offset = -math.fmod(t_start, frame_time)
+            line_count = int(visible_frames) + 2
+            for i in range(line_count):
+                rx = ((offset + i * frame_time) / visible_time) * w
+                if -3 < rx < w + 3:
+                    px = x + rx
+                    dl.add_line(ImVec2(px, y), ImVec2(px, y + h), col, 1.0)
+
+        # ── 2. Time divider lines (every N frames) ────────────────────────
+        MAX_DIVIDERS = 150.0
+        n_frames_div = max(1, round(fps * 0.1))
+        time_interval = n_frames_div * frame_time
+        visible_intervals = visible_time / time_interval if time_interval > 0 else 999.0
+        if visible_intervals < MAX_DIVIDERS * 0.8:
+            alpha = int(255 * (1.0 - visible_intervals / MAX_DIVIDERS))
+            col2 = _col32(80 / 255, 80 / 255, 80 / 255, alpha / 255)
+            offset2 = -math.fmod(t_start, time_interval)
+            line_count2 = int(visible_intervals) + 2
+            for i in range(line_count2):
+                rx = ((offset2 + i * time_interval) / visible_time) * w
+                if -3 < rx < w + 3:
+                    px = x + rx
+                    dl.add_line(ImVec2(px, y), ImVec2(px, y + h), col2, 3.0)
+
+    def _draw_tempo_overlay_grid(
+        self, dl,
+        x: float, y: float, w: float, h: float,
+        t_start: float, t_end: float,
+        bpm: float, beat_offset_s: float, measure_idx: int,
+    ) -> None:
+        """Draw BPM-grid beat lines on a track (mirrors OFS TempoOverlay)."""
+        visible_time = t_end - t_start
+        if visible_time <= 0 or bpm <= 0:
+            return
+        beat_time = (60.0 / bpm) * _BEAT_MULTIPLES[measure_idx]
+        if beat_time <= 0:
+            return
+
+        beat_color = _TEMPO_BEAT_COLORS[measure_idx]
+        white_60   = _col32(1.0, 1.0, 1.0, 0.60)
+
+        visible_beats = int(visible_time / beat_time)
+        invisible_prev_beats = int(t_start / beat_time) if beat_time > 0 else 0
+        offset = -math.fmod(t_start, beat_time) + beat_offset_s
+        line_count = visible_beats + 2
+
+        # "thing" = subdivisions per whole measure at this measure_idx
+        thing = max(1, int(round(1.0 / (_BEAT_MULTIPLES[measure_idx] / 4.0))))
+
+        for i in range(-int(beat_offset_s / beat_time), line_count):
+            beat_idx = invisible_prev_beats + i
+            is_whole = (beat_idx % thing == 0)
+            rx = ((offset + i * beat_time) / visible_time) * w
+            if -5 < rx < w + 5:
+                px = x + rx
+                col  = beat_color if is_whole else white_60
+                thk  = 5.0 if is_whole else 3.0
+                dl.add_line(ImVec2(px, y), ImVec2(px, y + h), col, thk)
+                # Draw measure number for whole-measure lines
+                if is_whole:
+                    measure_num = beat_idx // thing if thing > 0 else beat_idx
+                    dl.add_text(
+                        ImVec2(px + 3, y + 2),
+                        _col32(0.9, 0.9, 0.9, 0.8),
+                        str(measure_num),
+                    )
+
+
     def _draw_seconds_label(self, dl, x: float, y: float, h: float, is_last_track: bool) -> None:
         """Draw 'X.XX seconds' label at bottom left (only on last track)."""
         if not is_last_track:
@@ -366,6 +522,16 @@ class ScriptTimeline:
         # Draw height guide lines (0%, 25%, 50%, 75%, 100%)
         self._draw_height_lines(dl, x, y, w, h)
 
+        # ── Overlay grid (Frame or Tempo) ─────────────────────────────────
+        if self.overlay_mode == 0:   # FRAME
+            self._draw_frame_overlay_grid(
+                dl, x, y, w, h, t_start, t_end, self.overlay_fps)
+        elif self.overlay_mode == 1:  # TEMPO
+            self._draw_tempo_overlay_grid(
+                dl, x, y, w, h, t_start, t_end,
+                self.overlay_bpm, self.overlay_tempo_offset_s,
+                self.overlay_tempo_measure_idx)
+
         # Track title (small label)
         title = script.title or f"Script {track_idx}"
         dl.add_text(
@@ -373,6 +539,29 @@ class ScriptTimeline:
             _col32(0.8, 0.8, 0.8, 0.7 if is_active else 0.4),
             title[:20],
         )
+
+        # ── Waveform overlay (behind action lines) ────────────────────────
+        if self.show_waveform and self.waveform is not None and self.waveform.ready:
+            _WV_H_SCALE = 0.72      # max fraction of track height used by wave
+            wv_col = _col32(*self.waveform_color)
+            cy = y + h * 0.5        # centre line of track
+            n_cols = max(1, int(w))
+            t_range = t_end - t_start
+            if t_range > 0:
+                inv_cols = t_range / n_cols
+                col = 0
+                while col < n_cols:
+                    t0 = t_start + col * inv_cols
+                    t1 = t0 + inv_cols * 2          # 2-px chunks
+                    amp = self.waveform.get_max_in_range(t0, t1)
+                    if amp > 0.01:
+                        half_h = amp * min(2.0, max(0.05, self.waveform_scale)) * h * _WV_H_SCALE * 0.5
+                        dl.add_rect_filled(
+                            ImVec2(x + col, cy - half_h),
+                            ImVec2(x + col + 2, cy + half_h),
+                            wv_col,
+                        )
+                    col += 2
 
         # Find visible actions (dots only — strictly within the viewport)
         actions = script.actions.get_actions_in_range(
@@ -392,30 +581,55 @@ class ScriptTimeline:
 
         # ── Draw connecting lines (with speed-based coloring) ────────────
         if self.show_action_lines and len(line_actions) > 1:
-            prev_action = None
-            for a in line_actions:
-                if prev_action is not None:
-                    p1 = ImVec2(
-                        self._time_to_x(prev_action.at / 1000.0, x, w, t_start, t_end),
-                        self._pos_to_y(prev_action.pos, y, h)
-                    )
-                    p2 = ImVec2(
-                        self._time_to_x(a.at / 1000.0, x, w, t_start, t_end),
-                        self._pos_to_y(a.pos, y, h)
-                    )
-                    # Black border for depth
-                    dl.add_line(p1, p2, _col32(0, 0, 0, 1.0), 7.0)
-                    # Speed-based color
-                    if is_active:
-                        col_line = self._get_speed_color(a, prev_action)
-                    else:
-                        col_line = COL_INACTIVE_LINE
-                    dl.add_line(p1, p2, col_line, LINE_THICKNESS)
+            if self.spline_mode and len(line_actions) >= 2:
+                # Spline: subdivide each segment into N steps for smooth curve
+                SUBDIVS = 8
+                prev_action = None
+                for a in line_actions:
+                    if prev_action is not None:
+                        seg_t0 = prev_action.at / 1000.0
+                        seg_t1 = a.at / 1000.0
+                        if is_active:
+                            col_line = self._get_speed_color(a, prev_action)
+                        else:
+                            col_line = COL_INACTIVE_LINE
+                        pts = []
+                        for j in range(SUBDIVS + 1):
+                            frac   = j / SUBDIVS
+                            at_ms  = prev_action.at + (a.at - prev_action.at) * frac
+                            pos    = script.actions.interpolate_spline(at_ms)
+                            px     = self._time_to_x(at_ms / 1000.0, x, w, t_start, t_end)
+                            py     = self._pos_to_y(pos, y, h)
+                            pts.append(ImVec2(px, py))
+                        for k in range(len(pts) - 1):
+                            dl.add_line(pts[k], pts[k+1], _col32(0, 0, 0, 1.0), 7.0)
+                            dl.add_line(pts[k], pts[k+1], col_line, LINE_THICKNESS)
+                    prev_action = a
+            else:
+                prev_action = None
+                for a in line_actions:
+                    if prev_action is not None:
+                        p1 = ImVec2(
+                            self._time_to_x(prev_action.at / 1000.0, x, w, t_start, t_end),
+                            self._pos_to_y(prev_action.pos, y, h)
+                        )
+                        p2 = ImVec2(
+                            self._time_to_x(a.at / 1000.0, x, w, t_start, t_end),
+                            self._pos_to_y(a.pos, y, h)
+                        )
+                        # Black border for depth
+                        dl.add_line(p1, p2, _col32(0, 0, 0, 1.0), 7.0)
+                        # Speed-based color
+                        if is_active:
+                            col_line = self._get_speed_color(a, prev_action)
+                        else:
+                            col_line = COL_INACTIVE_LINE
+                        dl.add_line(p1, p2, col_line, LINE_THICKNESS)
 
-                    # Highlight selected segments
-                    if is_active and (prev_action in script.selection) and (a in script.selection):
-                        dl.add_line(p1, p2, COL_SEL_RECT_BORDER, LINE_THICKNESS)
-                prev_action = a
+                        # Highlight selected segments
+                        if is_active and (prev_action in script.selection) and (a in script.selection):
+                            dl.add_line(p1, p2, COL_SEL_RECT_BORDER, LINE_THICKNESS)
+                    prev_action = a
 
         # ── Draw action points (with dynamic size based on zoom) ─────────
         if self.show_action_points:
@@ -441,7 +655,19 @@ class ScriptTimeline:
                     else:
                         col_inner = COL_ACTION if is_active else COL_INACTIVE_TRACK
                         dl.add_circle_filled(sc, point_size * 0.7, col_inner, 4)
-
+        # ── MaxSpeedHighlight — red overlay on very-fast segments ───────────────
+        if self.show_max_speed_highlight and is_active:
+            ms_col = _col32(*self.max_speed_color)
+            for a1, a2 in zip(list(line_actions), list(line_actions)[1:]):
+                dt = (a2.at - a1.at) / 1000.0
+                if dt <= 0:
+                    continue
+                speed = abs(a2.pos - a1.pos) / dt
+                if speed >= self.max_speed_threshold:
+                    x1m = self._time_to_x(a1.at / 1000.0, x, w, t_start, t_end)
+                    x2m = self._time_to_x(a2.at / 1000.0, x, w, t_start, t_end)
+                    dl.add_rect_filled(
+                        ImVec2(x1m, y), ImVec2(x2m, y + h), ms_col)
         # ── Pop clip rect before drawing border ───────────────────────────
         dl.pop_clip_rect()
 
@@ -487,8 +713,32 @@ class ScriptTimeline:
                 0.5, min(300.0, self._target_visible_secs * factor))
             self._zoom_time = _time.monotonic()
 
+        # ── Playhead scrub: click/drag on the top triangle ruler zone ─────────
+        RULER_H = imgui.get_font_size() * 1.5
+        in_ruler = (win_pos.y <= mouse.y <= win_pos.y + RULER_H)
+
+        if is_item_hovered and in_ruler and imgui.is_mouse_clicked(0):
+            self._scrubbing = True
+            self._scrub_was_paused = player.IsPaused()
+            if not player.IsPaused():
+                player.SetPaused(True)
+
+        if self._scrubbing:
+            imgui.set_mouse_cursor(imgui.MouseCursor_.resize_ew)
+            if is_item_active and imgui.is_mouse_down(0):
+                seek_t = self._x_to_time(mouse.x, win_pos.x, avail.x, t_start, t_end)
+                seek_t = max(0.0, min(duration, seek_t))
+                if player.VideoLoaded():
+                    player.SetPositionExact(seek_t)
+                    if player.IsPaused():
+                        player.Update(0.0)
+            if imgui.is_mouse_released(0):
+                self._scrubbing = False
+                if not self._scrub_was_paused:
+                    player.SetPaused(False)
+
         # ── Mouse cursor: Hand when hovering over an action dot ────────────────
-        if is_item_hovered and not self._is_selecting and self._drag_action_ref is None:
+        if is_item_hovered and not self._is_selecting and self._drag_action_ref is None and not self._scrubbing:
             hit_cur, _, _ = self._find_action_at_mouse(
                 mouse, win_pos, avail, scripts, active_idx, draw_map, t_start, t_end
             )
@@ -562,6 +812,10 @@ class ScriptTimeline:
         shift_held   = io.key_shift
 
         # ── handleTimelineClicks (mirrors OFS exactly) ─────────────────────────
+        # Skip if scrubbing — playhead drag already consumed the click
+        if self._scrubbing:
+            return
+
         if imgui.is_mouse_clicked(0):
             # Priority 1: action hit-test — OFS only checks the active script
             hit_action, hit_script, hit_idx = self._find_action_at_mouse(
