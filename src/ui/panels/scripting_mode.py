@@ -10,7 +10,7 @@ Exposed methods called by app:
   Init(player, undo)
   Show(player)
   Update()
-  add_edit_action(action) — called by keybinding numeric keys
+  AddEditAction(action) — called by keybinding numeric keys
   PreviousFrame() / NextFrame()
   LogicalFrameTime() — seconds per "step" for current mode
   SteppingIntervalForward(t) / SteppingIntervalBackward(t)
@@ -46,28 +46,13 @@ class OverlayModeEnum(IntEnum):
     EMPTY = 2
 
 
-# Beat subdivisions used by Tempo overlay (matches OFS beatMultiples[])
-_BEAT_MULTIPLES = [
-    4.0,              # whole measures
-    4.0 * (1 / 2),   # 2nds
-    4.0 * (1 / 4),   # 4ths
-    4.0 * (1 / 8),   # 8ths
-    4.0 * (1 / 12),  # 12ths
-    4.0 * (1 / 16),  # 16ths
-    4.0 * (1 / 24),  # 24ths
-    4.0 * (1 / 32),  # 32nds
-    4.0 * (1 / 48),  # 48ths
-    4.0 * (1 / 64),  # 64ths
-]
-_BEAT_NAMES = [
-    "Whole measures", "2nds", "4ths", "8ths",
-    "12ths", "16ths", "24ths", "32nds", "48ths", "64ths",
-]
+# Beat subdivisions — shared from core.tempo
+from src.core.tempo import BEAT_MULTIPLES, BEAT_NAMES
 
 
 def _tempo_beat_time(bpm: float, measure_idx: int) -> float:
     """Seconds per subdivided beat for given BPM and subdivision index."""
-    return (60.0 / max(1.0, bpm)) * _BEAT_MULTIPLES[measure_idx]
+    return (60.0 / max(1.0, bpm)) * BEAT_MULTIPLES[measure_idx]
 
 
 def _get_next_tempo_position(beat_time: float, current_time: float,
@@ -90,7 +75,11 @@ def _get_prev_tempo_position(beat_time: float, current_time: float,
     return new_pos
 
 class ScriptingMode:
-    """Python port of OFS_ScriptingMode."""
+    """Python port of ``OFS_ScriptingMode`` (OFS_ScriptingMode.h / .cpp).
+
+    Manages scripting modes (Normal, Recording, Alternating, Dynamic),
+    overlay modes (Frame, Tempo, Empty), and frame-stepping logic.
+    """
 
     WindowId = "Scripting###ScriptingMode"
 
@@ -149,10 +138,12 @@ class ScriptingMode:
     # ──────────────────────────────────────────────────────────────────────
 
     def Init(self, player: OFS_Videoplayer, undo: UndoSystem) -> None:
+        """Wire player and undo references. Mirrors ``OFS_ScriptingMode::Init``."""
         self._player = player
         self._undo   = undo
 
     def SetActiveGetter(self, fn) -> None:
+        """Set the callable that returns the currently active Funscript."""
         self._active_getter = fn
 
     def _active(self) -> Optional[Funscript]:
@@ -186,6 +177,7 @@ class ScriptingMode:
         return -self.LogicalFrameTime()
 
     def PreviousFrame(self) -> None:
+        """Step one frame/beat backward. Mirrors ``OFS_ScriptingMode::PreviousFrame``."""
         if not self._player:
             return
         if self.overlay_mode == OverlayModeEnum.TEMPO:
@@ -201,6 +193,7 @@ class ScriptingMode:
             self._player.SeekFrames(-self._step_size)
 
     def NextFrame(self) -> None:
+        """Step one frame/beat forward. Mirrors ``OFS_ScriptingMode::NextFrame``."""
         if not self._player:
             return
         if self.overlay_mode == OverlayModeEnum.TEMPO:
@@ -219,8 +212,8 @@ class ScriptingMode:
     # Action editing
     # ──────────────────────────────────────────────────────────────────────
 
-    def add_edit_action(self, action: FunscriptAction) -> None:
-        """Add or edit action at the action's timestamp."""
+    def AddEditAction(self, action: FunscriptAction) -> None:
+        """Add or edit action at the action's timestamp. Mirrors ``OFS_ScriptingMode::AddEditAction``."""
         s = self._active()
         if not s or not self._player:
             return
@@ -239,7 +232,7 @@ class ScriptingMode:
         # Dynamic injection mode: auto-insert a midpoint action
         if self.mode == ScriptingModeEnum.DYNAMIC:
             t_sec = action.at / 1000.0
-            behind = s.actions.get_previous_action_behind(t_sec - 0.001)
+            behind = s.actions.GetPreviousActionBehind(t_sec - 0.001)
             if behind is not None:
                 dt = t_sec - behind.at / 1000.0
                 # midpoint with direction bias
@@ -263,14 +256,14 @@ class ScriptingMode:
                 )
                 inject_ms = int(inject_at_s * 1000)
                 if behind.at < inject_ms < action.at:
-                    s.add_action(FunscriptAction(inject_ms, inject_pos))
+                    s.AddAction(FunscriptAction(inject_ms, inject_pos))
 
-        existing = s.get_action_at_time(action.at / 1000.0, ft)
+        existing = s.GetActionAtTime(action.at / 1000.0, ft)
         if existing:
             if existing.pos != action.pos:
-                s.edit_action(existing, FunscriptAction(existing.at, action.pos))
+                s.EditAction(existing, FunscriptAction(existing.at, action.pos))
         else:
-            s.add_action(action)
+            s.AddAction(action)
 
         # Toggle alternating state (unless context-sensitive)
         if self.mode == ScriptingModeEnum.ALTERNATING and not self._alt_context_sensitive:
@@ -284,7 +277,7 @@ class ScriptingMode:
         """Compute the overridden position for AlternatingMode."""
         pos = action.pos
         if self._alt_context_sensitive:
-            behind = script.actions.get_previous_action_behind(action.at / 1000.0 - 0.001)
+            behind = script.actions.GetPreviousActionBehind(action.at / 1000.0 - 0.001)
             if behind:
                 if behind.pos <= 50 and pos <= 50:
                     pos = 100 - pos   # push to top
@@ -297,18 +290,23 @@ class ScriptingMode:
                 pos = 100 - pos
         return FunscriptAction(action.at, max(0, min(100, pos)))
 
-    def set_active_position(self, value: float, active: bool) -> None:
+    def SetActivePosition(self, value: float, active: bool) -> None:
         """Feed 0-100 position from an external source (e.g. Simulator).
-        Call every frame; set active=False when the source is not pointing at it."""
+
+        Call every frame; set *active=False* when the source is not pointing
+        at it.  Mirrors ``OFS_ScriptingMode::SetActivePosition``.
+        """
         if active:
             self._rec_active_pos = value
         self._rec_has_pos = active
 
     def Undo(self) -> None:
+        """Revert alternating-mode toggle on undo. Mirrors ``OFS_ScriptingMode::Undo``."""
         if self.mode == ScriptingModeEnum.ALTERNATING and not self._alt_context_sensitive:
             self._alt_next_inverted = not self._alt_next_inverted
 
     def Redo(self) -> None:
+        """Re-apply alternating-mode toggle on redo. Mirrors ``OFS_ScriptingMode::Redo``."""
         if self.mode == ScriptingModeEnum.ALTERNATING and not self._alt_context_sensitive:
             self._alt_next_inverted = not self._alt_next_inverted
 
@@ -317,6 +315,7 @@ class ScriptingMode:
     # ──────────────────────────────────────────────────────────────────────
 
     def Update(self) -> None:
+        """Per-frame update (drives recording mode). Mirrors ``OFS_ScriptingMode::Update``."""
         if self.mode == ScriptingModeEnum.RECORDING:
             self._update_recording()
 
@@ -343,15 +342,15 @@ class ScriptingMode:
         pos = max(0, min(100, int(round(self._rec_active_pos))))
         new_act = FunscriptAction(at_ms, pos)
 
-        existing = s.get_action_at_time(t, self._player.FrameTime() * 0.5)
+        existing = s.GetActionAtTime(t, self._player.FrameTime() * 0.5)
         if existing is None:
             if self._undo:
-                self._undo.snapshot(StateType.ADD_ACTION, s)
-            s.add_action(new_act)
+                self._undo.Snapshot(StateType.ADD_ACTION, s)
+            s.AddAction(new_act)
         elif existing.pos != pos:
             if self._undo:
-                self._undo.snapshot(StateType.MOVE_ACTION, s)
-            s.edit_action(existing, FunscriptAction(existing.at, pos))
+                self._undo.Snapshot(StateType.MOVE_ACTION, s)
+            s.EditAction(existing, FunscriptAction(existing.at, pos))
 
         self._rec_last_at = t
 
@@ -360,6 +359,7 @@ class ScriptingMode:
     # ──────────────────────────────────────────────────────────────────────
 
     def Show(self, player: OFS_Videoplayer) -> None:
+        """Render the scripting-mode panel. Mirrors ``OFS_ScriptingMode::ShowScriptingMode``."""
         self._player = player
         imgui.text("Scripting mode")
         imgui.separator()
@@ -617,7 +617,7 @@ class ScriptingMode:
         # Subdivision combo (Snap)
         imgui.set_next_item_width(-1)
         ch3, new_idx = imgui.combo("Snap##tmpo_snap",
-                                   self._tempo_measure_idx, _BEAT_NAMES)
+                                   self._tempo_measure_idx, BEAT_NAMES)
         if ch3:
             self._tempo_measure_idx = new_idx
         # Interval display

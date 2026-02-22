@@ -123,7 +123,7 @@ def _get_proc_address(ctx, name) -> int:
 # ---------------------------------------------------------------------------
 
 class OFS_Videoplayer:
-    """Python port of C++ OFS_Videoplayer (mpv render-context based)."""
+    """Mpv render-context video player. Mirrors ``OFS_Videoplayer`` (OFS_Videoplayer.h)."""
 
     MinPlaybackSpeed: float = 0.05
     MaxPlaybackSpeed: float = 3.0
@@ -171,7 +171,7 @@ class OFS_Videoplayer:
 
     # ------------------------------------------------------------------
     def Init(self, hw_accel: bool = True) -> bool:
-        """Must be called AFTER the OpenGL context is current."""
+        """Initialise mpv and the render context (requires current GL context). Mirrors ``OFS_Videoplayer::Init``."""
         if not MPV_AVAILABLE:
             log.error("python-mpv not available")
             return False
@@ -230,6 +230,7 @@ class OFS_Videoplayer:
         return True
 
     def Shutdown(self) -> None:
+        """Destroy the render context and terminate mpv. Mirrors ``OFS_Videoplayer::Shutdown``."""
         if self._render_ctx is not None:
             try:
                 self._render_ctx.free()
@@ -385,9 +386,9 @@ class OFS_Videoplayer:
     # ------------------------------------------------------------------
 
     def Update(self, delta: float) -> None:
-        """Render pending mpv frames into FBO.
+        """Render pending mpv frames into the FBO. Mirrors ``OFS_Videoplayer::Update``.
 
-        Mirrors OFS C++ Update() drain loop:
+        OFS C++ drain loop:
           while(SDL_AtomicGet(&renderUpdate) > 0) {
               if (flags & MPV_RENDER_UPDATE_FRAME) RenderFrameToTexture();
               SDL_AtomicDecRef(&renderUpdate);
@@ -426,7 +427,7 @@ class OFS_Videoplayer:
                     pass
 
     def NotifySwap(self) -> None:
-        """Call after SDL_GL_SwapWindow()."""
+        """Signal a buffer swap to mpv. Mirrors ``OFS_Videoplayer::NotifySwap``."""
         if self._render_ctx is not None:
             try:
                 self._render_ctx.report_swap()
@@ -438,12 +439,14 @@ class OFS_Videoplayer:
     # ------------------------------------------------------------------
 
     def OpenVideo(self, path: str) -> None:
+        """Load and begin playing *path*. Mirrors ``OFS_Videoplayer::OpenVideo``."""
         if not self._mpv:
             return
         self._video_loaded = False
         self._mpv.play(path)
 
     def CloseVideo(self) -> None:
+        """Stop playback and unload the current video. Mirrors ``OFS_Videoplayer::CloseVideo``."""
         if not self._mpv:
             return
         self._video_loaded = False
@@ -454,6 +457,7 @@ class OFS_Videoplayer:
             pass
 
     def SetPaused(self, paused: bool) -> None:
+        """Pause or resume playback. Mirrors ``OFS_Videoplayer::SetPaused``."""
         if not self._mpv:
             return
         try:
@@ -462,9 +466,11 @@ class OFS_Videoplayer:
             pass
 
     def TogglePlay(self) -> None:
+        """Toggle between play and pause. Mirrors ``OFS_Videoplayer::TogglePlay``."""
         self.SetPaused(not self.IsPaused())
 
     def SetPositionExact(self, time_s: float, pauses: bool = False) -> None:
+        """Seek to an absolute time in seconds. Mirrors ``OFS_Videoplayer::SetPositionExact``."""
         if not self._mpv:
             return
         self._logical_pos = time_s
@@ -476,6 +482,7 @@ class OFS_Videoplayer:
             pass
 
     def SetPositionPercent(self, pct: float, pauses: bool = False) -> None:
+        """Seek to a normalised position (0–1). Mirrors ``OFS_Videoplayer::SetPositionPercent``."""
         if not self._mpv:
             return
         self._logical_pos = pct * self._duration
@@ -487,6 +494,7 @@ class OFS_Videoplayer:
             pass
 
     def SeekRelative(self, delta_s: float) -> None:
+        """Seek forward or backward by *delta_s* seconds. Mirrors ``OFS_Videoplayer::SeekRelative``."""
         if not self._mpv:
             return
         try:
@@ -495,6 +503,7 @@ class OFS_Videoplayer:
             pass
 
     def SeekFrames(self, offset: int) -> None:
+        """Step forward or backward by *offset* video frames. Mirrors ``OFS_Videoplayer::SeekFrames``."""
         if not self._mpv:
             return
         # Rate-limit: don't flood mpv's command queue faster than the video
@@ -513,12 +522,15 @@ class OFS_Videoplayer:
             pass
 
     def NextFrame(self) -> None:
+        """Advance one video frame. Mirrors ``OFS_Videoplayer::NextFrame``."""
         self.SeekFrames(1)
 
     def PreviousFrame(self) -> None:
+        """Step back one video frame. Mirrors ``OFS_Videoplayer::PreviousFrame``."""
         self.SeekFrames(-1)
 
     def SetSpeed(self, speed: float) -> None:
+        """Set playback speed, clamped to valid range. Mirrors ``OFS_Videoplayer::SetSpeed``."""
         if not self._mpv:
             return
         speed = max(self.MinPlaybackSpeed, min(self.MaxPlaybackSpeed, speed))
@@ -528,9 +540,11 @@ class OFS_Videoplayer:
             pass
 
     def AddSpeed(self, delta: float) -> None:
+        """Increment playback speed by *delta*. Mirrors ``OFS_Videoplayer::AddSpeed``."""
         self.SetSpeed(self._speed + delta)
 
     def SetVolume(self, volume: float) -> None:
+        """Set audio volume (0–100). Mirrors ``OFS_Videoplayer::SetVolume``."""
         if not self._mpv:
             return
         self._volume = max(0.0, min(100.0, volume))
@@ -540,13 +554,16 @@ class OFS_Videoplayer:
             pass
 
     def Mute(self) -> None:
+        """Mute audio, saving current volume for later restore. Mirrors ``OFS_Videoplayer::Mute``."""
         self._last_volume = self._volume
         self.SetVolume(0.0)
 
     def Unmute(self) -> None:
+        """Restore volume to the level before mute. Mirrors ``OFS_Videoplayer::Unmute``."""
         self.SetVolume(self._last_volume)
 
     def CycleSubtitles(self) -> None:
+        """Cycle through available subtitle tracks. Mirrors ``OFS_Videoplayer::CycleSubtitles``."""
         if not self._mpv:
             return
         try:
@@ -555,6 +572,7 @@ class OFS_Videoplayer:
             pass
 
     def SaveFrameToImage(self, directory: str) -> None:
+        """Save the current frame as a PNG screenshot. Mirrors ``OFS_Videoplayer::SaveFrameToImage``."""
         if not self._mpv:
             return
         os.makedirs(directory, exist_ok=True)
@@ -565,40 +583,76 @@ class OFS_Videoplayer:
             log.error(f"SaveFrameToImage: {e}")
 
     def SyncWithPlayerTime(self) -> None:
+        """Re-seek to the current reported player time. Mirrors ``OFS_Videoplayer::SyncWithPlayerTime``."""
         self.SetPositionExact(self.CurrentPlayerTime())
 
     # ------------------------------------------------------------------
     # Query API
     # ------------------------------------------------------------------
 
-    def VideoLoaded(self) -> bool:       return self._video_loaded
-    def IsPaused(self)   -> bool:        return self._paused
-    def Duration(self)   -> float:       return self._duration
+    def VideoLoaded(self) -> bool:
+        """True if a video file is currently loaded. Mirrors ``MpvDataCache::videoLoaded``."""
+        return self._video_loaded
+
+    def IsPaused(self) -> bool:
+        """True if playback is paused. Mirrors ``MpvDataCache::paused``."""
+        return self._paused
+
+    def Duration(self) -> float:
+        """Total duration in seconds. Mirrors ``MpvDataCache::duration``."""
+        return self._duration
 
     def CurrentTime(self) -> float:
+        """Current playback time in seconds. Mirrors ``MpvDataCache::percentPos * duration``."""
         return self._duration * self._percent_pos
 
     def CurrentPlayerTime(self) -> float:
+        """Alias for ``CurrentTime``. Mirrors ``OFS_Videoplayer::CurrentPlayerTime``."""
         return self.CurrentTime()
 
     def CurrentPlayerPosition(self) -> float:
+        """Current position as a normalised 0–1 value. Mirrors ``MpvDataCache::percentPos``."""
         return self._percent_pos
 
     def CurrentPercentPosition(self) -> float:
+        """Logical position as a 0–1 fraction. Mirrors ``OFS_Videoplayer::CurrentPercentPosition``."""
         if self._duration > 0:
             return self._logical_pos / self._duration
         return 0.0
 
-    def VideoWidth(self)  -> int:   return self._video_width
-    def VideoHeight(self) -> int:   return self._video_height
-    def Fps(self)         -> float: return self._fps if self._fps > 0 else 30.0
-    def FrameTime(self)   -> float: return 1.0 / self.Fps()
-    def CurrentSpeed(self)-> float: return self._speed
-    def ActualSpeed(self) -> float: return self._actual_speed
-    def Volume(self)      -> float: return self._volume
-    def VideoPath(self)   -> str:   return self._file_path
+    def VideoWidth(self) -> int:
+        """Width of the loaded video in pixels. Mirrors ``MpvDataCache::videoWidth``."""
+        return self._video_width
+
+    def VideoHeight(self) -> int:
+        """Height of the loaded video in pixels. Mirrors ``MpvDataCache::videoHeight``."""
+        return self._video_height
+
+    def Fps(self) -> float:
+        """Video frame rate (falls back to 30). Mirrors ``MpvDataCache::fps``."""
+        return self._fps if self._fps > 0 else 30.0
+
+    def FrameTime(self) -> float:
+        """Duration of one video frame in seconds. Mirrors ``OFS_Videoplayer::FrameTime``."""
+        return 1.0 / self.Fps()
+
+    def CurrentSpeed(self) -> float:
+        """Current playback speed multiplier. Mirrors ``MpvDataCache::speed``."""
+        return self._speed
+
+    def ActualSpeed(self) -> float:
+        """Smoothed measured playback speed (EMA of observed position change)."""
+        return self._actual_speed
+
+    def Volume(self) -> float:
+        """Current audio volume (0–100). Mirrors ``MpvDataCache::volume``."""
+        return self._volume
+
+    def VideoPath(self) -> str:
+        """Absolute path of the currently loaded video. Mirrors ``MpvDataCache::filePath``."""
+        return self._file_path
 
     @property
     def FrameTexture(self) -> int:
-        """GL texture id for ImGui::Image()."""
+        """GL texture id for ``ImGui::Image()``. Mirrors ``OFS_Videoplayer::FrameTexture``."""
         return self._texture

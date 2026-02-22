@@ -431,7 +431,7 @@ class OFS_VideoplayerControls:
     # Heatmap bitmap export
     # ──────────────────────────────────────────────────────────────────────
 
-    def render_heatmap_to_bytes(
+    def RenderHeatmapToBytes(
         self,
         width: int,
         height: int,
@@ -500,7 +500,7 @@ class OFS_VideoplayerControls:
 
         return bytes(pixels)
 
-    def save_heatmap_png(
+    def SaveHeatmapPng(
         self,
         path: str,
         width: int = 1280,
@@ -520,7 +520,7 @@ class OFS_VideoplayerControls:
                     is added on top (total image = width × 2*height).
         """
         chapter_height = height if chapters else 0
-        raw = self.render_heatmap_to_bytes(width, height,
+        raw = self.RenderHeatmapToBytes(width, height,
                                            chapters=chapters,
                                            chapter_height=chapter_height)
         if raw is None:
@@ -561,7 +561,7 @@ class OFS_VideoplayerControls:
             return True
         except Exception as exc:
             import logging
-            logging.getLogger(__name__).error(f"save_heatmap_png: {exc}")
+            logging.getLogger(__name__).error(f"SaveHeatmapPng: {exc}")
             return False
 
     # ──────────────────────────────────────────────────────────────────────

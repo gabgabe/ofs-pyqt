@@ -65,7 +65,7 @@ def _compute_stats(actions: List[FunscriptAction]):
 
 
 class StatisticsWindow:
-    """OFS Statistics panel."""
+    """OFS Statistics panel. Mirrors ``OFS_Statistics`` (OFS_Statistics.h / .cpp)."""
 
     WindowId = "Statistics###Statistics"
 
@@ -78,7 +78,7 @@ class StatisticsWindow:
     def _script_hash(script: "Funscript") -> int:
         """Fast hash that changes whenever the script's content or selection changes."""
         n_all = len(list(script.actions))
-        n_sel = script.selection_size()
+        n_sel = script.SelectionSize()
         # XOR with the sum of all positions so adding/moving a point invalidates cache
         pos_sum = sum(a.pos for a in script.actions)
         return hash((id(script), n_all, n_sel, pos_sum))
@@ -90,6 +90,7 @@ class StatisticsWindow:
         player: OFS_Videoplayer,
         script: Optional[Funscript],
     ) -> None:
+        """Render the statistics panel. Mirrors ``OFS_Statistics::ShowStatisticsWindow``."""
         if script is None:
             imgui.text_disabled("No script loaded")
             return
@@ -97,12 +98,12 @@ class StatisticsWindow:
         current_time = player.CurrentTime()  # seconds
 
         # ── Real-time stats at cursor (mirrors OFS ShowStatisticsWindow) ──
-        front = script.get_action_at_time(current_time, 0.001)
+        front = script.GetActionAtTime(current_time, 0.001)
         if front is not None:
-            behind = script.get_previous_action_behind(front.at / 1000.0)
+            behind = script.GetPreviousActionBehind(front.at / 1000.0)
         else:
-            behind = script.get_previous_action_behind(current_time)
-            front  = script.get_next_action_ahead(current_time)
+            behind = script.GetPreviousActionBehind(current_time)
+            front  = script.GetNextActionAhead(current_time)
 
         if behind is not None:
             interval_ms = (current_time - behind.at / 1000.0) * 1000.0

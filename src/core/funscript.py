@@ -1,8 +1,10 @@
-"""
-Funscript Data Model - Complete port of OFS Funscript.h / Funscript.cpp
+"""Funscript data model — Python port of OFS ``Funscript/Funscript.h`` and ``Funscript/Funscript.cpp``.
 
-Handles loading, saving, editing, selection, undo-ready operations,
-interpolation, heatmap data, and multitrack support.
+Mirrors the core OFS funscript data structures and editing operations including
+action arrays (``FunscriptArray``), selection management, spline interpolation
+(``FunscriptSpline``), heatmap generation, and undo-ready mutations.
+
+See also: ``FunscriptAction.h``, ``FunscriptSpline.h``, ``FunscriptHeatmap.h``.
 """
 
 import json
@@ -13,12 +15,6 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Any, Tuple, TYPE_CHECKING
 from pathlib import Path
-
-try:
-    from PySide6.QtCore import QObject, Signal
-    _HAS_QT = True
-except ImportError:
-    _HAS_QT = False
 
 if TYPE_CHECKING:
     from .undo_system import FunscriptUndoSystem, FunscriptData as _FunscriptData
@@ -32,7 +28,8 @@ log = logging.getLogger(__name__)
 
 @dataclass(order=True)
 class FunscriptAction:
-    """Single action point: time in ms + position 0-100."""
+    """Single action point (time in ms + position 0–100). Mirrors ``FunscriptAction`` in ``FunscriptAction.h``."""
+
     at: int   # milliseconds
     pos: int  # 0-100
 
@@ -59,6 +56,8 @@ class FunscriptAction:
 
 @dataclass
 class FunscriptMetadata:
+    """Script metadata fields. Mirrors ``Funscript::Metadata`` in ``Funscript.h``."""
+
     type: str = "basic"
     title: str = ""
     creator: str = ""
@@ -73,11 +72,12 @@ class FunscriptMetadata:
 
 
 # ---------------------------------------------------------------------------
-# Chapter / Bookmark
+# Funscript Bookmark (from .funscript metadata.bookmarks[])
 # ---------------------------------------------------------------------------
 
 @dataclass
-class Chapter:
+class FunscriptBookmark:
+    """A bookmark entry from the .funscript file's metadata section."""
     name: str = ""
     start_time: float = 0.0   # seconds
     end_time: float = 0.0     # seconds (0 = bookmark)
@@ -92,55 +92,60 @@ class Chapter:
 # ---------------------------------------------------------------------------
 
 class FunscriptActionArray:
-    """
-    Sorted array of FunscriptActions with binary-search operations.
-    Mirrors OFS FunscriptArray semantics.
+    """Sorted array of ``FunscriptAction`` with binary-search operations.
+
+    Mirrors ``FunscriptArray`` (a ``vector_set<FunscriptAction>``) from
+    ``FunscriptAction.h`` and the array helpers in ``Funscript.h``.
     """
 
     def __init__(self, actions: Optional[List["FunscriptAction"]] = None):
         self._actions: List[FunscriptAction] = []
         if actions:
             for a in actions:
-                self.add(a)
+                self.Add(a)
 
     # ---- mutation ----
 
-    def add(self, action: FunscriptAction) -> None:
-        """Insert maintaining sort order; replace if same time."""
+    def Add(self, action: FunscriptAction) -> None:
+        """Insert maintaining sort order; replace if same timestamp. Mirrors ``FunscriptArray::emplace``."""
         idx = bisect.bisect_left([a.at for a in self._actions], action.at)
         if idx < len(self._actions) and self._actions[idx].at == action.at:
             self._actions[idx] = action
         else:
             self._actions.insert(idx, action)
 
-    def remove_action(self, action: FunscriptAction) -> bool:
+    def RemoveAction(self, action: FunscriptAction) -> bool:
+        """Remove an action by value. Mirrors ``Funscript::RemoveAction``."""
         idx = bisect.bisect_left([a.at for a in self._actions], action.at)
         if idx < len(self._actions) and self._actions[idx].at == action.at:
             del self._actions[idx]
             return True
         return False
 
-    def remove_at_time(self, at: int) -> bool:
+    def RemoveAtTime(self, at: int) -> bool:
+        """Remove the action at exact timestamp *at* (ms)."""
         idx = bisect.bisect_left([a.at for a in self._actions], at)
         if idx < len(self._actions) and self._actions[idx].at == at:
             del self._actions[idx]
             return True
         return False
 
-    def remove_actions_in_interval(self, start_s: float, end_s: float) -> int:
+    def RemoveActionsInInterval(self, start_s: float, end_s: float) -> int:
+        """Remove all actions in [*start_s*, *end_s*]. Mirrors ``Funscript::RemoveActionsInInterval``."""
         start_ms = int(start_s * 1000)
         end_ms = int(end_s * 1000)
         before = len(self._actions)
         self._actions = [a for a in self._actions if a.at < start_ms or a.at > end_ms]
         return before - len(self._actions)
 
-    def clear(self):
+    def Clear(self):
+        """Remove all actions. Mirrors ``FunscriptArray::clear``."""
         self._actions.clear()
 
     # ---- lookup ----
 
-    def get_at_time(self, time_s: float, tolerance_s: float = 0.0) -> Optional[FunscriptAction]:
-        """Get action exactly at time_s or within tolerance_s."""
+    def GetAtTime(self, time_s: float, tolerance_s: float = 0.0) -> Optional[FunscriptAction]:
+        """Get action at *time_s* ± *tolerance_s*. Mirrors ``Funscript::getActionAtTime``."""
         at = int(time_s * 1000)
         tol = int(tolerance_s * 1000)
         times = [a.at for a in self._actions]
@@ -155,8 +160,8 @@ class FunscriptActionArray:
                     best = self._actions[check_idx]
         return best
 
-    def get_closest_action(self, time_s: float) -> Optional[FunscriptAction]:
-        """Get the action closest to time_s."""
+    def GetClosestAction(self, time_s: float) -> Optional[FunscriptAction]:
+        """Get the action closest to *time_s*. Mirrors ``Funscript::GetClosestAction``."""
         if not self._actions:
             return None
         at = time_s * 1000
@@ -169,16 +174,16 @@ class FunscriptActionArray:
             candidates.append(self._actions[idx - 1])
         return min(candidates, key=lambda a: abs(a.at - at))
 
-    def get_closest_action_selection(self, time_s: float,
+    def GetClosestActionSelection(self, time_s: float,
                                       selection: "FunscriptActionArray") -> Optional[FunscriptAction]:
-        """Get closest selected action to time_s."""
+        """Get closest selected action to *time_s*. Mirrors ``Funscript::GetClosestActionSelection``."""
         if not selection._actions:
             return None
         at = time_s * 1000
         return min(selection._actions, key=lambda a: abs(a.at - at))
 
-    def get_previous_action_behind(self, time_s: float) -> Optional[FunscriptAction]:
-        """Get last action strictly before time_s (OFS GetPreviousActionBehind)."""
+    def GetPreviousActionBehind(self, time_s: float) -> Optional[FunscriptAction]:
+        """Get last action strictly before *time_s*. Mirrors ``Funscript::getPreviousActionBehind``."""
         at = time_s * 1000
         times = [a.at for a in self._actions]
         idx = bisect.bisect_left(times, at) - 1
@@ -186,8 +191,8 @@ class FunscriptActionArray:
             return self._actions[idx]
         return None
 
-    def get_next_action_ahead(self, time_s: float) -> Optional[FunscriptAction]:
-        """Get first action strictly after time_s (OFS GetNextActionAhead)."""
+    def GetNextActionAhead(self, time_s: float) -> Optional[FunscriptAction]:
+        """Get first action strictly after *time_s*. Mirrors ``Funscript::getNextActionAhead``."""
         at = time_s * 1000
         times = [a.at for a in self._actions]
         idx = bisect.bisect_right(times, at)
@@ -195,18 +200,19 @@ class FunscriptActionArray:
             return self._actions[idx]
         return None
 
-    def get_actions_in_range(self, start_ms: int, end_ms: int) -> List[FunscriptAction]:
+    def GetActionsInRange(self, start_ms: int, end_ms: int) -> List[FunscriptAction]:
+        """Return actions in [*start_ms*, *end_ms*]. Mirrors ``Funscript::GetSelection``."""
         times = [a.at for a in self._actions]
         lo = bisect.bisect_left(times, start_ms)
         hi = bisect.bisect_right(times, end_ms)
         return self._actions[lo:hi]
 
-    def lower_bound(self, at_ms: int) -> int:
-        """Index of first action >= at_ms."""
+    def LowerBound(self, at_ms: int) -> int:
+        """Index of first action ≥ *at_ms*. Mirrors ``FunscriptArray::lower_bound``."""
         return bisect.bisect_left([a.at for a in self._actions], at_ms)
 
-    def interpolate(self, at_ms: float) -> float:
-        """Linear interpolation of position at at_ms."""
+    def Interpolate(self, at_ms: float) -> float:
+        """Linear interpolation of position at *at_ms*. Mirrors ``Funscript::GetPositionAtTime``."""
         if not self._actions:
             return 50.0
         times = [a.at for a in self._actions]
@@ -221,11 +227,11 @@ class FunscriptActionArray:
         t = (at_ms - a.at) / (b.at - a.at)
         return a.pos + t * (b.pos - a.pos)
 
-    def interpolate_spline(self, at_ms: float) -> float:
-        """Catmull-Rom spline interpolation of position at at_ms.
+    def InterpolateSpline(self, at_ms: float) -> float:
+        """Catmull-Rom spline interpolation of position at *at_ms*.
 
-        Mirrors FunscriptSpline::catmul_rom_spline_alt() from OFS.
-        Returns value in 0-100 range (float).
+        Mirrors ``FunscriptSpline::catmul_rom_spline_alt`` from ``FunscriptSpline.h``.
+        Returns value in 0–100 range.
         """
         acts = self._actions
         n = len(acts)
@@ -276,8 +282,8 @@ class FunscriptActionArray:
 
     # ---- helpers ----
 
-    def get_last_stroke(self, before_time_s: float) -> List[FunscriptAction]:
-        """Get last complete stroke before time_s (OFS GetLastStroke)."""
+    def GetLastStroke(self, before_time_s: float) -> List[FunscriptAction]:
+        """Get last complete stroke before *time_s*. Mirrors ``Funscript::GetLastStroke``."""
         at = before_time_s * 1000
         times = [a.at for a in self._actions]
         idx = bisect.bisect_left(times, at) - 1
@@ -305,17 +311,20 @@ class FunscriptActionArray:
 
     # ---- serialization ----
 
-    def to_list(self) -> List[Dict[str, int]]:
+    def ToList(self) -> List[Dict[str, int]]:
+        """Serialize actions to a list of ``{at, pos}`` dicts for JSON export."""
         return [{"at": a.at, "pos": a.pos} for a in self._actions]
 
     @classmethod
-    def from_list(cls, data: List[Dict[str, Any]]) -> "FunscriptActionArray":
+    def FromList(cls, data: List[Dict[str, Any]]) -> "FunscriptActionArray":
+        """Deserialize from a list of ``{at, pos}`` dicts (JSON import)."""
         arr = cls()
         for item in data:
-            arr.add(FunscriptAction(at=int(item["at"]), pos=int(item["pos"])))
+            arr.Add(FunscriptAction(at=int(item["at"]), pos=int(item["pos"])))
         return arr
 
-    def copy(self) -> "FunscriptActionArray":
+    def Copy(self) -> "FunscriptActionArray":
+        """Return a deep copy of this action array."""
         new = FunscriptActionArray()
         new._actions = [FunscriptAction(a.at, a.pos) for a in self._actions]
         return new
@@ -340,9 +349,10 @@ class FunscriptActionArray:
 # ---------------------------------------------------------------------------
 
 class Funscript:
-    """
-    Complete funscript document.
-    Full port of OFS Funscript class with all editing operations.
+    """Complete funscript document.
+
+    Full port of the ``Funscript`` class from ``Funscript.h`` / ``Funscript.cpp``
+    including action editing, selection management, and undo support.
     """
 
     EXTENSION = ".funscript"
@@ -361,7 +371,7 @@ class Funscript:
         self.actions = FunscriptActionArray()
         self.selection = FunscriptActionArray()
         self.metadata = FunscriptMetadata()
-        self.chapters: List[Chapter] = []
+        self.bookmarks: List[FunscriptBookmark] = []
         self.unsaved_edits: bool = False
         self._edit_time = None
 
@@ -374,8 +384,8 @@ class Funscript:
     # Title management
     # ============================================================
 
-    def set_title(self, new_title: str) -> None:
-        """Change the script title and dispatch FUNSCRIPT_NAME_CHANGED."""
+    def SetTitle(self, new_title: str) -> None:
+        """Change the script title. Dispatches ``FunscriptNameChangedEvent``."""
         if new_title == self.title:
             return
         old_title = self.title
@@ -392,14 +402,15 @@ class Funscript:
     # ============================================================
 
     @classmethod
-    def load(cls, path: str) -> "Funscript":
+    def Load(cls, path: str) -> "Funscript":
+        """Load a ``.funscript`` JSON file from disk. Mirrors ``Funscript::Deserialize``."""
         fs = cls(path)
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
             for action in data.get("actions", []):
-                fs.actions.add(FunscriptAction(
+                fs.actions.Add(FunscriptAction(
                     at=int(action.get("at", 0)),
                     pos=int(action.get("pos", 0))
                 ))
@@ -421,7 +432,7 @@ class Funscript:
             fs.title = fs.metadata.title or Path(path).stem
 
             for bm in meta.get("bookmarks", []):
-                fs.chapters.append(Chapter(
+                fs.bookmarks.append(FunscriptBookmark(
                     name=bm.get("name", ""),
                     start_time=cls._parse_time(bm.get("time", "0:00")),
                 ))
@@ -431,7 +442,8 @@ class Funscript:
             log.error(f"Failed to load funscript {path}: {e}")
         return fs
 
-    def save(self, path: Optional[str] = None) -> bool:
+    def Save(self, path: Optional[str] = None) -> bool:
+        """Write the funscript to disk as JSON. Mirrors ``Funscript::Serialize``."""
         save_path = path or self._path
         if not save_path:
             return False
@@ -440,7 +452,7 @@ class Funscript:
                 "version": "1.0",
                 "inverted": False,
                 "range": 100,
-                "actions": self.actions.to_list(),
+                "actions": self.actions.ToList(),
                 "metadata": {
                     "type": self.metadata.type,
                     "title": self.metadata.title,
@@ -454,8 +466,8 @@ class Funscript:
                     "notes": self.metadata.notes,
                     "duration": self.metadata.duration,
                     "bookmarks": [
-                        {"name": ch.name, "time": self._format_time(ch.start_time)}
-                        for ch in self.chapters
+                        {"name": bm.name, "time": self._format_time(bm.start_time)}
+                        for bm in self.bookmarks
                     ]
                 }
             }
@@ -473,48 +485,52 @@ class Funscript:
     # Basic editing
     # ============================================================
 
-    def add_action(self, action: FunscriptAction) -> None:
-        self.actions.add(action)
+    def AddAction(self, action: FunscriptAction) -> None:
+        """Add a new action point. Mirrors ``Funscript::AddAction``."""
+        self.actions.Add(action)
         self._mark_edited()
 
-    def add_edit_action(self, action: FunscriptAction, tolerance_s: float = 0.0) -> None:
-        """Add or replace action within tolerance (OFS AddEditAction)."""
-        existing = self.actions.get_at_time(action.at_s, tolerance_s)
+    def AddEditAction(self, action: FunscriptAction, tolerance_s: float = 0.0) -> None:
+        """Add or replace action within tolerance. Mirrors ``Funscript::AddEditAction``."""
+        existing = self.actions.GetAtTime(action.at_s, tolerance_s)
         if existing:
-            self.actions.remove_action(existing)
+            self.actions.RemoveAction(existing)
             if existing.pos != action.pos:
-                self.actions.add(action)
+                self.actions.Add(action)
         else:
-            self.actions.add(action)
+            self.actions.Add(action)
         self._mark_edited()
 
-    def edit_action(self, old: FunscriptAction, new: FunscriptAction) -> None:
-        """Replace one action with another (OFS EditAction)."""
-        self.actions.remove_action(old)
-        self.actions.add(new)
-        self.selection.remove_action(old)
-        self.selection.add(new)
+    def EditAction(self, old: FunscriptAction, new: FunscriptAction) -> None:
+        """Replace one action with another. Mirrors ``Funscript::EditAction``."""
+        self.actions.RemoveAction(old)
+        self.actions.Add(new)
+        self.selection.RemoveAction(old)
+        self.selection.Add(new)
         self._mark_edited()
 
-    def remove_action(self, action: FunscriptAction) -> bool:
-        result = self.actions.remove_action(action)
-        self.selection.remove_action(action)
+    def RemoveAction(self, action: FunscriptAction) -> bool:
+        """Remove a single action. Mirrors ``Funscript::RemoveAction``."""
+        result = self.actions.RemoveAction(action)
+        self.selection.RemoveAction(action)
         if result:
             self._mark_edited()
         return result
 
-    def remove_selected_actions(self) -> int:
+    def RemoveSelectedActions(self) -> int:
+        """Remove all currently selected actions. Mirrors ``Funscript::RemoveSelectedActions``."""
         count = 0
         for a in list(self.selection):
-            if self.actions.remove_action(a):
+            if self.actions.RemoveAction(a):
                 count += 1
-        self.selection.clear()
+        self.selection.Clear()
         if count:
             self._mark_edited()
         return count
 
-    def remove_actions_in_interval(self, start_s: float, end_s: float) -> int:
-        count = self.actions.remove_actions_in_interval(start_s, end_s)
+    def RemoveActionsInInterval(self, start_s: float, end_s: float) -> int:
+        """Remove all actions in a time interval. Mirrors ``Funscript::RemoveActionsInInterval``."""
+        count = self.actions.RemoveActionsInInterval(start_s, end_s)
         if count:
             self._mark_edited()
         return count
@@ -523,37 +539,44 @@ class Funscript:
     # Selection
     # ============================================================
 
-    def select_action(self, action: FunscriptAction) -> None:
-        self.selection.add(FunscriptAction(action.at, action.pos))
+    def SelectAction(self, action: FunscriptAction) -> None:
+        """Mark an action as selected. Mirrors ``Funscript::SelectAction``."""
+        self.selection.Add(FunscriptAction(action.at, action.pos))
 
-    def deselect_action(self, action: FunscriptAction) -> None:
-        self.selection.remove_action(action)
+    def DeselectAction(self, action: FunscriptAction) -> None:
+        """Remove an action from the selection. Mirrors ``Funscript::DeselectAction``."""
+        self.selection.RemoveAction(action)
 
-    def select_all(self) -> None:
-        self.selection.clear()
+    def SelectAll(self) -> None:
+        """Select every action in the script. Mirrors ``Funscript::SelectAll``."""
+        self.selection.Clear()
         for a in self.actions:
-            self.selection.add(FunscriptAction(a.at, a.pos))
+            self.selection.Add(FunscriptAction(a.at, a.pos))
 
-    def clear_selection(self) -> None:
-        self.selection.clear()
+    def ClearSelection(self) -> None:
+        """Deselect all actions. Mirrors ``Funscript::ClearSelection``."""
+        self.selection.Clear()
 
-    def select_time(self, start_s: float, end_s: float) -> None:
-        self.selection.clear()
+    def SelectTime(self, start_s: float, end_s: float) -> None:
+        """Select all actions in a time range. Mirrors ``Funscript::SelectTime``."""
+        self.selection.Clear()
         start_ms = int(start_s * 1000)
         end_ms = int(end_s * 1000)
-        for a in self.actions.get_actions_in_range(start_ms, end_ms):
-            self.selection.add(FunscriptAction(a.at, a.pos))
+        for a in self.actions.GetActionsInRange(start_ms, end_ms):
+            self.selection.Add(FunscriptAction(a.at, a.pos))
 
-    def has_selection(self) -> bool:
+    def HasSelection(self) -> bool:
+        """Return whether any actions are selected. Mirrors ``Funscript::HasSelection``."""
         return len(self.selection) > 0
 
-    def selection_size(self) -> int:
+    def SelectionSize(self) -> int:
+        """Return the number of selected actions. Mirrors ``Funscript::SelectionSize``."""
         return len(self.selection)
 
-    def select_top_actions(self) -> None:
-        """
-        Keep local maxima — deselects the two lowest-pos actions from every
-        consecutive triplet.  Exact port of OFS Funscript::SelectTopActions.
+    def SelectTopActions(self) -> None:
+        """Keep local maxima in selection. Mirrors ``Funscript::SelectTopActions``.
+
+        Deselects the two lowest-pos actions from every consecutive triplet.
         """
         sel = sorted(self.selection, key=lambda a: a.at)
         if len(sel) < 3:
@@ -571,13 +594,13 @@ class Funscript:
         new_sel = FunscriptActionArray()
         for a in sel:
             if a.at not in to_deselect:
-                new_sel.add(FunscriptAction(a.at, a.pos))
+                new_sel.Add(FunscriptAction(a.at, a.pos))
         self.selection = new_sel
 
-    def select_bottom_actions(self) -> None:
-        """
-        Keep local minima — deselects the two highest-pos actions from every
-        consecutive triplet.  Exact port of OFS Funscript::SelectBottomActions.
+    def SelectBottomActions(self) -> None:
+        """Keep local minima in selection. Mirrors ``Funscript::SelectBottomActions``.
+
+        Deselects the two highest-pos actions from every consecutive triplet.
         """
         sel = sorted(self.selection, key=lambda a: a.at)
         if len(sel) < 3:
@@ -595,64 +618,64 @@ class Funscript:
         new_sel = FunscriptActionArray()
         for a in sel:
             if a.at not in to_deselect:
-                new_sel.add(FunscriptAction(a.at, a.pos))
+                new_sel.Add(FunscriptAction(a.at, a.pos))
         self.selection = new_sel
 
-    def select_middle_actions(self) -> None:
-        """
-        Keep actions that are neither tops nor bottoms.
-        Exact port of OFS Funscript::SelectMidActions.
-        """
+    def SelectMiddleActions(self) -> None:
+        """Keep actions that are neither tops nor bottoms. Mirrors ``Funscript::SelectMidActions``."""
         sel = sorted(self.selection, key=lambda a: a.at)
         if len(sel) < 3:
             return
         # Discover top-point timestamps
-        saved = self.selection.copy()
-        self.select_top_actions()
+        saved = self.selection.Copy()
+        self.SelectTopActions()
         top_times = {a.at for a in self.selection}
         # Discover bottom-point timestamps
-        self.selection = saved.copy()
-        self.select_bottom_actions()
+        self.selection = saved.Copy()
+        self.SelectBottomActions()
         bottom_times = {a.at for a in self.selection}
         # Keep only mid points (neither top nor bottom)
-        self.selection = saved.copy()
+        self.selection = saved.Copy()
         new_sel = FunscriptActionArray()
         for a in sel:
             if a.at not in top_times and a.at not in bottom_times:
-                new_sel.add(FunscriptAction(a.at, a.pos))
+                new_sel.Add(FunscriptAction(a.at, a.pos))
         self.selection = new_sel
 
     # ============================================================
     # Move / Transform selected
     # ============================================================
 
-    def move_selection_position(self, delta: int) -> None:
+    def MoveSelectionPosition(self, delta: int) -> None:
+        """Shift selected actions by *delta* position units. Mirrors ``Funscript::MoveSelectionPosition``."""
         new_sel = []
         for a in list(self.selection):
             new_pos = max(0, min(100, a.pos + delta))
             new_a = FunscriptAction(a.at, new_pos)
-            self.actions.remove_action(a)
-            self.actions.add(new_a)
+            self.actions.RemoveAction(a)
+            self.actions.Add(new_a)
             new_sel.append(new_a)
-        self.selection.clear()
+        self.selection.Clear()
         for a in new_sel:
-            self.selection.add(a)
+            self.selection.Add(a)
         self._mark_edited()
 
-    def move_selection_time(self, delta_s: float, frame_time_s: float = 0.0) -> None:
+    def MoveSelectionTime(self, delta_s: float, frame_time_s: float = 0.0) -> None:
+        """Shift selected actions by *delta_s* seconds. Mirrors ``Funscript::MoveSelectionTime``."""
         delta_ms = int(delta_s * 1000)
         moved = []
         for a in list(self.selection):
-            self.actions.remove_action(a)
+            self.actions.RemoveAction(a)
             new_a = FunscriptAction(max(0, a.at + delta_ms), a.pos)
             moved.append(new_a)
-        self.selection.clear()
+        self.selection.Clear()
         for a in moved:
-            self.actions.add(a)
-            self.selection.add(a)
+            self.actions.Add(a)
+            self.selection.Add(a)
         self._mark_edited()
 
-    def equalize_selection(self) -> None:
+    def EqualizeSelection(self) -> None:
+        """Space selected actions evenly in time. Mirrors ``Funscript::EqualizeSelection``."""
         sel = sorted(self.selection, key=lambda a: a.at)
         if len(sel) < 3:
             return
@@ -662,55 +685,62 @@ class Funscript:
         for i, old in enumerate(sel):
             new_at = int(start.at + i * step)
             new_a = FunscriptAction(new_at, old.pos)
-            self.actions.remove_action(old)
-            self.actions.add(new_a)
-            self.selection.remove_action(old)
-            self.selection.add(new_a)
+            self.actions.RemoveAction(old)
+            self.actions.Add(new_a)
+            self.selection.RemoveAction(old)
+            self.selection.Add(new_a)
         self._mark_edited()
 
-    def invert_selection(self) -> None:
+    def InvertSelection(self) -> None:
+        """Flip selected actions (pos → 100 − pos). Mirrors ``Funscript::InvertSelection``."""
         new_sel = []
         for a in list(self.selection):
             new_a = FunscriptAction(a.at, 100 - a.pos)
-            self.actions.remove_action(a)
-            self.actions.add(new_a)
+            self.actions.RemoveAction(a)
+            self.actions.Add(new_a)
             new_sel.append(new_a)
-        self.selection.clear()
+        self.selection.Clear()
         for a in new_sel:
-            self.selection.add(a)
+            self.selection.Add(a)
         self._mark_edited()
 
     # ============================================================
     # Lookups (proxy to array)
     # ============================================================
 
-    def get_action_at_time(self, time_s: float, tolerance_s: float = 0.0) -> Optional[FunscriptAction]:
-        return self.actions.get_at_time(time_s, tolerance_s)
+    def GetActionAtTime(self, time_s: float, tolerance_s: float = 0.0) -> Optional[FunscriptAction]:
+        """Get action at *time_s* ± *tolerance_s*. Mirrors ``Funscript::GetActionAtTime``."""
+        return self.actions.GetAtTime(time_s, tolerance_s)
 
-    def get_closest_action(self, time_s: float) -> Optional[FunscriptAction]:
-        return self.actions.get_closest_action(time_s)
+    def GetClosestAction(self, time_s: float) -> Optional[FunscriptAction]:
+        """Get the action closest to *time_s*. Mirrors ``Funscript::GetClosestAction``."""
+        return self.actions.GetClosestAction(time_s)
 
-    def get_closest_action_selection(self, time_s: float) -> Optional[FunscriptAction]:
-        return self.actions.get_closest_action_selection(time_s, self.selection)
+    def GetClosestActionSelection(self, time_s: float) -> Optional[FunscriptAction]:
+        """Get closest selected action to *time_s*. Mirrors ``Funscript::GetClosestActionSelection``."""
+        return self.actions.GetClosestActionSelection(time_s, self.selection)
 
-    def get_previous_action_behind(self, time_s: float) -> Optional[FunscriptAction]:
-        return self.actions.get_previous_action_behind(time_s)
+    def GetPreviousActionBehind(self, time_s: float) -> Optional[FunscriptAction]:
+        """Get last action strictly before *time_s*. Mirrors ``Funscript::GetPreviousActionBehind``."""
+        return self.actions.GetPreviousActionBehind(time_s)
 
-    def get_next_action_ahead(self, time_s: float) -> Optional[FunscriptAction]:
-        return self.actions.get_next_action_ahead(time_s)
+    def GetNextActionAhead(self, time_s: float) -> Optional[FunscriptAction]:
+        """Get first action strictly after *time_s*. Mirrors ``Funscript::GetNextActionAhead``."""
+        return self.actions.GetNextActionAhead(time_s)
 
-    def get_last_stroke(self, before_time_s: float) -> List[FunscriptAction]:
-        return self.actions.get_last_stroke(before_time_s)
+    def GetLastStroke(self, before_time_s: float) -> List[FunscriptAction]:
+        """Get last complete stroke before *time_s*. Mirrors ``Funscript::GetLastStroke``."""
+        return self.actions.GetLastStroke(before_time_s)
 
-    def get_position_at_time(self, time_s: float) -> float:
+    def GetPositionAtTime(self, time_s: float) -> float:
         """Return linear-interpolated position at time_s as float in [0.0, 1.0].
 
         Mirrors OFS Funscript::GetPositionAtTime() which returns a 0-1 range
         (position / 100.0) used by the simulator and scripting overlay.
         """
-        return self.actions.interpolate(time_s * 1000.0) / 100.0
+        return self.actions.Interpolate(time_s * 1000.0) / 100.0
 
-    def add_multiple_actions(self, new_actions: List[FunscriptAction]) -> None:
+    def AddMultipleActions(self, new_actions: List[FunscriptAction]) -> None:
         """Batch-insert a list of actions efficiently (single sort pass).
 
         Mirrors OFS Funscript::AddMultipleActions — avoids O(n²) repeated
@@ -726,7 +756,8 @@ class Funscript:
     # Speed / Heatmap
     # ============================================================
 
-    def speed_at(self, at_ms: float) -> float:
+    def SpeedAt(self, at_ms: float) -> float:
+        """Compute instantaneous speed (pos-units/s) at *at_ms*. Used by ``FunscriptHeatmap``."""
         if len(self.actions) < 2:
             return 0.0
         times = [a.at for a in self.actions]
@@ -739,12 +770,13 @@ class Funscript:
             return 0.0
         return abs(curr.pos - prev.pos) / dt
 
-    def generate_heatmap_data(self, width: int, duration_ms: float) -> List[float]:
+    def GenerateHeatmapData(self, width: int, duration_ms: float) -> List[float]:
+        """Generate per-pixel speed data for heatmap rendering. Mirrors ``FunscriptHeatmap``."""
         MAX_SPEED = 400.0
         if duration_ms <= 0 or len(self.actions) < 2:
             return [0.0] * width
         return [
-            min(self.speed_at((x / width) * duration_ms), MAX_SPEED)
+            min(self.SpeedAt((x / width) * duration_ms), MAX_SPEED)
             for x in range(width)
         ]
 
@@ -752,13 +784,12 @@ class Funscript:
     # Special functions
     # ============================================================
 
-    def range_extend_selection(self, range_extend: int) -> None:
-        """
-        Stroke-aware range extension.  Exact port of OFS RangeExtendSelection.
+    def RangeExtendSelection(self, range_extend: int) -> None:
+        """Stroke-aware range extension. Mirrors ``Funscript::RangeExtendSelection``.
 
-        range_extend : int  (-50 … 100)
-            Positive values push highs higher and lows lower.
-            Negative values compress the range toward each stroke's centre.
+        Args:
+            range_extend: Value in -50…100. Positive pushes highs higher and lows
+                lower; negative compresses toward each stroke's centre.
         """
         if range_extend == 0:
             return
@@ -769,11 +800,11 @@ class Funscript:
         selected = [a for a in self.actions if (a.at, a.pos) in sel_set]
         if not selected:
             return
-        self.clear_selection()
+        self.ClearSelection()
         new_positions = self._compute_range_extend(selected, range_extend)
         for old_a, new_pos in zip(selected, new_positions):
-            self.actions.remove_action(old_a)
-            self.actions.add(FunscriptAction(old_a.at, new_pos))
+            self.actions.RemoveAction(old_a)
+            self.actions.Add(FunscriptAction(old_a.at, new_pos))
         self._mark_edited()
 
     @staticmethod
@@ -841,8 +872,8 @@ class Funscript:
 
         return positions
 
-    def rdp_simplify_selection(self, epsilon: float) -> None:
-        """Ramer-Douglas-Peucker simplification (OFS RamerDouglasPeucker)."""
+    def RdpSimplifySelection(self, epsilon: float) -> None:
+        """Ramer-Douglas-Peucker simplification of selected actions. Mirrors OFS RDP algorithm."""
         sel = sorted(self.selection, key=lambda a: a.at)
         if len(sel) < 3:
             return
@@ -850,8 +881,8 @@ class Funscript:
         kept_set = {(a.at, a.pos) for a in kept}
         for a in sel:
             if (a.at, a.pos) not in kept_set:
-                self.actions.remove_action(a)
-                self.selection.remove_action(a)
+                self.actions.RemoveAction(a)
+                self.selection.RemoveAction(a)
         self._mark_edited()
 
     @staticmethod
@@ -881,30 +912,27 @@ class Funscript:
     # Undo support
     # ============================================================
 
-    def init_undo_system(self) -> None:
-        """Attach a FunscriptUndoSystem to this script (call once after creation)."""
+    def InitUndoSystem(self) -> None:
+        """Attach a ``FunscriptUndoSystem`` to this script (call once after creation)."""
         from .undo_system import FunscriptUndoSystem
         self.undo_system = FunscriptUndoSystem(self)
 
-    def rollback(self, data: "_FunscriptData") -> None:
-        """
-        Restore script data from a snapshot (called by FunscriptUndoSystem).
-        Mirrors OFS Funscript::Rollback.
-        """
-        self.actions.clear()
+    def Rollback(self, data: "_FunscriptData") -> None:
+        """Restore script data from an undo snapshot. Mirrors ``Funscript::Rollback``."""
+        self.actions.Clear()
         for a in data.actions:
-            self.actions.add(FunscriptAction(a.at, a.pos))
-        self.selection.clear()
+            self.actions.Add(FunscriptAction(a.at, a.pos))
+        self.selection.Clear()
         for a in data.selection:
-            self.selection.add(FunscriptAction(a.at, a.pos))
+            self.selection.Add(FunscriptAction(a.at, a.pos))
         self._notify_actions_changed()
 
-    def connect_actions_changed(self, callback) -> None:
+    def ConnectActionsChanged(self, callback) -> None:
         """Register a callback to be called whenever actions change."""
         if callback not in self._actions_changed_callbacks:
             self._actions_changed_callbacks.append(callback)
 
-    def disconnect_actions_changed(self, callback) -> None:
+    def DisconnectActionsChanged(self, callback) -> None:
         """Unregister an actions-changed callback."""
         try:
             self._actions_changed_callbacks.remove(callback)
@@ -948,7 +976,8 @@ class Funscript:
         return f"{m}:{s:05.2f}"
 
     @staticmethod
-    def find_related_scripts(root_path: str) -> List[str]:
+    def FindRelatedScripts(root_path: str) -> List[str]:
+        """Find multi-axis companion scripts sharing the same stem."""
         root = Path(root_path)
         parent = root.parent
         stem = root.stem

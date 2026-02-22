@@ -30,6 +30,8 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 class StateType(IntEnum):
+    """Undo operation type tags. Mirrors ``OFS::StateType`` enum."""
+
     ADD_EDIT_ACTIONS           = 0
     ADD_EDIT_ACTION            = 1
     ADD_ACTION                 = 2
@@ -102,7 +104,7 @@ def state_label(t: StateType) -> str:
 
 @dataclass
 class FunscriptData:
-    """Immutable snapshot of a Funscript's action + selection arrays."""
+    """Immutable snapshot of a Funscript's action + selection arrays. Mirrors ``Funscript::FunscriptData``."""
     actions: list   # list of FunscriptAction (deep copies)
     selection: list  # list of FunscriptAction (deep copies, from selection array)
 
@@ -121,6 +123,8 @@ class FunscriptData:
 
 @dataclass
 class ScriptState:
+    """Per-script undo entry pairing a ``StateType`` with captured data. Mirrors ``OFS::ScriptState``."""
+
     type: StateType
     data: FunscriptData
 
@@ -131,7 +135,8 @@ class ScriptState:
 
 class FunscriptUndoSystem:
     """
-    Attached to each Funscript. Manages per-script undo/redo stacks.
+    Per-script undo/redo stack manager. Mirrors ``OFS::FunscriptUndoSystem``.
+
     Snapshot() saves current data; Undo()/Redo() swap data in/out.
     """
 
@@ -147,8 +152,8 @@ class FunscriptUndoSystem:
     # Public API
     # ------------------------------------------------------------------
 
-    def snapshot(self, state_type: StateType, clear_redo: bool = True) -> None:
-        """Push current script data onto the undo stack."""
+    def Snapshot(self, state_type: StateType, clear_redo: bool = True) -> None:
+        """Push current script data onto the undo stack. Mirrors ``FunscriptUndoSystem::Snapshot``."""
         self._undo_stack.append(
             ScriptState(state_type, FunscriptData.capture(self._script))
         )
@@ -158,23 +163,26 @@ class FunscriptUndoSystem:
         if clear_redo:
             self._clear_redo()
 
-    def undo(self) -> bool:
+    def Undo(self) -> bool:
+        """Pop the undo stack and restore the previous state. Mirrors ``FunscriptUndoSystem::Undo``."""
         if not self._undo_stack:
             return False
         top = self._undo_stack.pop()
         self._snapshot_redo(top.type)
-        self._script.rollback(top.data)
+        self._script.Rollback(top.data)
         return True
 
-    def redo(self) -> bool:
+    def Redo(self) -> bool:
+        """Reapply a previously undone state. Mirrors ``FunscriptUndoSystem::Redo``."""
         if not self._redo_stack:
             return False
         top = self._redo_stack.pop()
-        self.snapshot(top.type, clear_redo=False)
-        self._script.rollback(top.data)
+        self.Snapshot(top.type, clear_redo=False)
+        self._script.Rollback(top.data)
         return True
 
-    def match_undo_top(self, state_type: StateType) -> bool:
+    def MatchUndoTop(self, state_type: StateType) -> bool:
+        """Return True if the top undo entry matches *state_type*. Mirrors ``FunscriptUndoSystem::MatchUndoTop``."""
         return bool(self._undo_stack) and self._undo_stack[-1].type == state_type
 
     @property
@@ -185,7 +193,8 @@ class FunscriptUndoSystem:
     def redo_empty(self) -> bool:
         return not self._redo_stack
 
-    def clear(self) -> None:
+    def Clear(self) -> None:
+        """Discard all undo and redo history. Mirrors ``FunscriptUndoSystem::Clear``."""
         self._undo_stack.clear()
         self._redo_stack.clear()
 
@@ -210,6 +219,8 @@ class FunscriptUndoSystem:
 
 @dataclass
 class UndoContext:
+    """One entry on the global undo stack, referencing affected scripts. Mirrors ``OFS::UndoContext``."""
+
     state_type: StateType
     # Weak references are not practical with plain Python objects;
     # we store the script objects directly (they're managed by the Project).
@@ -230,11 +241,11 @@ class UndoSystem:
     Usage::
 
         # before mutating any scripts:
-        undo_system.snapshot(StateType.ADD_ACTION, [script])
+        undo_system.Snapshot(StateType.ADD_ACTION, [script])
 
         # undo/redo:
-        undo_system.undo()
-        undo_system.redo()
+        undo_system.Undo()
+        undo_system.Redo()
     """
 
     def __init__(self) -> None:
@@ -245,14 +256,14 @@ class UndoSystem:
     # Public API
     # ------------------------------------------------------------------
 
-    def snapshot(
+    def Snapshot(
         self,
         state_type: StateType,
         scripts: "Funscript | List[Funscript]",
         clear_redo: bool = True,
     ) -> None:
         """
-        Take a snapshot of *scripts* before a mutating operation.
+        Take a snapshot of *scripts* before a mutating operation. Mirrors ``UndoSystem::Snapshot``.
 
         Parameters
         ----------
@@ -276,10 +287,10 @@ class UndoSystem:
 
         for script in scripts:
             if script.undo_system is not None:
-                script.undo_system.snapshot(state_type, clear_redo=clear_redo)
+                script.undo_system.Snapshot(state_type, clear_redo=clear_redo)
 
-    def undo(self) -> bool:
-        """Undo the most recent operation. Returns True if anything changed."""
+    def Undo(self) -> bool:
+        """Undo the most recent operation. Mirrors ``UndoSystem::Undo``."""
         if not self._undo_stack:
             return False
 
@@ -288,17 +299,17 @@ class UndoSystem:
 
         for script in context.scripts:
             if script.undo_system is not None:
-                did_something = script.undo_system.undo() or did_something
+                did_something = script.undo_system.Undo() or did_something
 
         # If nothing actually changed (stale scripts) recurse
         if not did_something and self._undo_stack:
-            return self.undo()
+            return self.Undo()
 
         self._redo_stack.append(context)
         return did_something
 
-    def redo(self) -> bool:
-        """Redo the most recently undone operation. Returns True if anything changed."""
+    def Redo(self) -> bool:
+        """Redo the most recently undone operation. Mirrors ``UndoSystem::Redo``."""
         if not self._redo_stack:
             return False
 
@@ -307,17 +318,17 @@ class UndoSystem:
 
         for script in context.scripts:
             if script.undo_system is not None:
-                did_something = script.undo_system.redo() or did_something
+                did_something = script.undo_system.Redo() or did_something
 
         # If nothing actually changed recurse
         if not did_something and self._redo_stack:
-            return self.redo()
+            return self.Redo()
 
         self._undo_stack.append(context)
         return did_something
 
-    def match_undo_top(self, state_type: StateType) -> bool:
-        """True if the top of the undo stack matches *state_type*."""
+    def MatchUndoTop(self, state_type: StateType) -> bool:
+        """True if the top of the undo stack matches *state_type*. Mirrors ``UndoSystem::MatchUndoTop``."""
         return bool(self._undo_stack) and self._undo_stack[-1].state_type == state_type
 
     @property
@@ -336,13 +347,13 @@ class UndoSystem:
     def redo_stack(self) -> List[UndoContext]:
         return self._redo_stack
 
-    def clear(self) -> None:
-        """Discard all undo/redo history (e.g. after loading a new project)."""
+    def Clear(self) -> None:
+        """Discard all undo/redo history. Mirrors ``UndoSystem::Clear``."""
         self._undo_stack.clear()
         self._redo_stack.clear()
 
-    def jump_to(self, target_idx: int) -> bool:
-        """Jump to absolute position *target_idx* in the combined history.
+    def JumpTo(self, target_idx: int) -> bool:
+        """Jump to absolute position *target_idx* in the combined history. Mirrors ``UndoSystem::JumpTo``.
 
         Index 0 = oldest committed state.
         Index ``len(undo_stack)`` = current (now) position.
@@ -352,13 +363,13 @@ class UndoSystem:
         changed = False
         if target_idx < cur_idx:
             for _ in range(cur_idx - target_idx):
-                if not self.undo():
+                if not self.Undo():
                     break
                 changed = True
         elif target_idx > cur_idx:
             steps = target_idx - cur_idx
             for _ in range(steps):
-                if not self.redo():
+                if not self.Redo():
                     break
                 changed = True
         return changed
@@ -374,9 +385,9 @@ class UndoSystem:
     # History data for the UI panel
     # ------------------------------------------------------------------
 
-    def history_items(self) -> list[dict]:
+    def HistoryItems(self) -> list[dict]:
         """
-        Returns a list of dicts for display in the undo/redo history panel.
+        Build the undo/redo history list for the UI panel. Mirrors ``UndoSystem::HistoryItems``.
 
         Each dict has keys:
             ``label``   – human-readable description

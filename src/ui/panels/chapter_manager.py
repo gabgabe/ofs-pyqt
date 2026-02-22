@@ -29,6 +29,8 @@ _DEFAULT_COLOR = (0.30, 0.60, 0.90, 1.0)
 
 
 class Chapter:
+    """A named time-range chapter. Mirrors the chapter struct in ``OFS_ChapterManager``."""
+
     def __init__(
         self,
         name:  str,
@@ -56,6 +58,8 @@ class Chapter:
 
 
 class Bookmark:
+    """A named time bookmark. Mirrors the bookmark struct in ``OFS_ChapterManager``."""
+
     def __init__(self, name: str, time: float) -> None:
         self.name = name
         self.time = time
@@ -69,7 +73,7 @@ class Bookmark:
 
 
 class ChapterManagerWindow:
-    """OFS Chapter Manager panel."""
+    """OFS Chapter Manager panel. Mirrors ``OFS_ChapterManager`` (OFS_ChapterManager.h / .cpp)."""
 
     WindowId = "Chapters###ChapterManager"
 
@@ -95,13 +99,15 @@ class ChapterManagerWindow:
     # API called by app keybindings
     # ──────────────────────────────────────────────────────────────────────
 
-    def add_chapter(self, start: float, duration: float) -> None:
+    def AddChapter(self, start: float, duration: float) -> None:
+        """Create a new chapter at the given time. Mirrors ``OFS_ChapterManager::AddChapter``."""
         name = self._new_name.strip() or f"Chapter {len(self._chapters) + 1}"
         end  = min(start + 30.0, duration)
         self._chapters.append(Chapter(name, start, end))
         log.info(f"Added chapter '{name}' @ {start:.2f}s")
 
-    def add_bookmark(self, time: float) -> None:
+    def AddBookmark(self, time: float) -> None:
+        """Create a new bookmark at the given time. Mirrors ``OFS_ChapterManager::AddBookmark``."""
         name = f"Bookmark {len(self._bookmarks) + 1}"
         self._bookmarks.append(Bookmark(name, time))
         log.info(f"Added bookmark '{name}' @ {time:.2f}s")
@@ -150,8 +156,8 @@ class ChapterManagerWindow:
     # Persistence helpers (called by app on load/save)
     # ──────────────────────────────────────────────────────────────────────
 
-    def load_from_project(self, project: OFS_Project) -> None:
-        """Restore chapters/bookmarks from project state dict."""
+    def LoadFromProject(self, project: OFS_Project) -> None:
+        """Restore chapters/bookmarks from project state dict. Mirrors ``OFS_ChapterManager::LoadFromProject``."""
         pid = id(project)
         if pid == self._synced_project_id:
             return
@@ -160,8 +166,8 @@ class ChapterManagerWindow:
         self._chapters  = [Chapter.from_dict(d) for d in pstate.get("chapters", [])]
         self._bookmarks = [Bookmark.from_dict(d) for d in pstate.get("bookmarks", [])]
 
-    def save_to_project(self, project: OFS_Project) -> None:
-        """Persist chapters/bookmarks into project extra state."""
+    def SaveToProject(self, project: OFS_Project) -> None:
+        """Persist chapters/bookmarks into project extra state. Mirrors ``OFS_ChapterManager::SaveToProject``."""
         if not hasattr(project, "_extra_state"):
             project._extra_state = {}
         project._extra_state["chapters"]  = [c.to_dict() for c in self._chapters]
@@ -175,13 +181,13 @@ class ChapterManagerWindow:
         project: OFS_Project,
         visible: bool,
     ) -> bool:
-        """Returns updated visible flag."""
+        """Render the chapter manager window. Mirrors ``OFS_ChapterManager::ShowChapterManagerWindow``."""
         if not visible:
             return False
 
         # Sync from project whenever a new project is active
         if project.is_valid:
-            self.load_from_project(project)
+            self.LoadFromProject(project)
 
         is_open = True
         imgui.set_next_window_size(ImVec2(480, 360), imgui.Cond_.first_use_ever)
@@ -192,7 +198,7 @@ class ChapterManagerWindow:
 
         # Persist every frame (cheap dict update)
         if project.is_valid:
-            self.save_to_project(project)
+            self.SaveToProject(project)
 
         return is_open
 
@@ -204,7 +210,7 @@ class ChapterManagerWindow:
 
         # ── Add controls ──────────────────────────────────────────────
         if imgui.button("+ Chapter"):
-            self.add_chapter(cur, duration)
+            self.AddChapter(cur, duration)
         if imgui.is_item_hovered():
             imgui.set_tooltip("Add chapter at current playback position")
         imgui.same_line(spacing=4)
@@ -214,7 +220,7 @@ class ChapterManagerWindow:
             imgui.set_tooltip("Name for next chapter (leave blank for auto)")
         imgui.same_line(spacing=8)
         if imgui.button("+ Bookmark"):
-            self.add_bookmark(cur)
+            self.AddBookmark(cur)
         if imgui.is_item_hovered():
             imgui.set_tooltip("Add bookmark at current playback position")
 

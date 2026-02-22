@@ -55,7 +55,7 @@ _FUNC_NAMES = ["Range Extender", "Simplify (RDP)"]
 
 
 class SpecialFunctionsWindow:
-    """OFS Special Functions panel."""
+    """OFS Special Functions panel. Mirrors ``OFS_SpecialFunctions`` (OFS_SpecialFunctions.h / .cpp)."""
 
     WindowId = "Special Functions###SpecFuncs"
 
@@ -75,7 +75,7 @@ class SpecialFunctionsWindow:
         undo:    UndoSystem,
         visible: bool,
     ) -> bool:
-        """Returns updated visible flag (False if user clicked the close button)."""
+        """Render the special-functions window. Mirrors ``OFS_SpecialFunctions::ShowSpecialFunctionsWindow``."""
         if not visible:
             return False
         open_flag = True
@@ -90,7 +90,7 @@ class SpecialFunctionsWindow:
         return open_flag
 
     def _draw(self, script: Optional[Funscript], undo: UndoSystem) -> None:
-        has_sel = bool(script and script.has_selection())
+        has_sel = bool(script and script.HasSelection())
 
         # ── Function selector combo ───────────────────────────────────
         imgui.set_next_item_width(180)
@@ -124,7 +124,7 @@ class SpecialFunctionsWindow:
         # collapses into a single undo entry.
         if imgui.is_item_activated():
             if has_sel and script:
-                undo.snapshot(StateType.RANGE_EXTEND, script)
+                undo.Snapshot(StateType.RANGE_EXTEND, script)
             self._range_drag_active = True
 
         changed, new_val = imgui.slider_int(
@@ -135,9 +135,9 @@ class SpecialFunctionsWindow:
 
         if changed and has_sel and script:
             # Undo before re-applying so every tick stays as one undo step
-            undo.undo(script)
-            undo.snapshot(StateType.RANGE_EXTEND, script)
-            script.range_extend_selection(new_val)
+            undo.Undo(script)
+            undo.Snapshot(StateType.RANGE_EXTEND, script)
+            script.RangeExtendSelection(new_val)
             self._range_extend = new_val
         elif changed:
             self._range_extend = new_val
@@ -145,8 +145,8 @@ class SpecialFunctionsWindow:
         imgui.same_line()
         if imgui.button("Reset##re"):
             if has_sel and script and self._range_extend != 0:
-                undo.snapshot(StateType.RANGE_EXTEND, script)
-                script.range_extend_selection(-self._range_extend)
+                undo.Snapshot(StateType.RANGE_EXTEND, script)
+                script.RangeExtendSelection(-self._range_extend)
             self._range_extend = 0
 
         if not has_sel:
@@ -203,11 +203,11 @@ class SpecialFunctionsWindow:
         simplified = _rdp(pts, scaled_eps)
         keep_at    = {int(p[0]) for p in simplified}
 
-        undo.snapshot(StateType.SIMPLIFY, script)
+        undo.Snapshot(StateType.SIMPLIFY, script)
         for a in sel:
             if a.at not in keep_at:
-                script.remove_action(a)
-        script.clear_selection()
+                script.RemoveAction(a)
+        script.ClearSelection()
 
     @staticmethod
     def _disabled_hint() -> None:

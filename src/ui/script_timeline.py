@@ -24,6 +24,7 @@ from imgui_bundle import imgui, ImVec2, ImVec4
 from src.core.video_player import OFS_Videoplayer
 from src.core.funscript    import Funscript, FunscriptAction
 from src.core.events       import EV, OFS_Events
+from src.core.tempo        import BEAT_MULTIPLES, BEAT_COLORS_RGBA
 
 
 def _col32(r: float, g: float, b: float, a: float = 1.0) -> int:
@@ -59,25 +60,8 @@ MAX_DOT_RADIUS      = 7.0
 # Default visible time window (seconds)
 DEFAULT_VISIBLE_SECS = 5.0
 
-# ── Tempo overlay beat colors (mirrors OFS beatMultipleColor[]) ───────────────
-_TEMPO_BEAT_COLORS = [
-    _col32(0xbb / 255, 0xbe / 255, 0xbc / 255, 1.0),   # whole measures
-    _col32(0x53 / 255, 0xd3 / 255, 0xdf / 255, 1.0),   # 2nds
-    _col32(0xc1 / 255, 0x65 / 255, 0x77 / 255, 1.0),   # 4ths
-    _col32(0x24 / 255, 0x54 / 255, 0x99 / 255, 1.0),   # 8ths
-    _col32(0xc8 / 255, 0x86 / 255, 0xee / 255, 1.0),   # 12ths
-    _col32(0xd2 / 255, 0xcc / 255, 0x23 / 255, 1.0),   # 16ths
-    _col32(0xea / 255, 0x8d / 255, 0xe0 / 255, 1.0),   # 24ths
-    _col32(0xe7 / 255, 0x97 / 255, 0x5c / 255, 1.0),   # 32nds
-    _col32(0xeb / 255, 0x38 / 255, 0x99 / 255, 1.0),   # 48ths
-    _col32(0x23 / 255, 0xd2 / 255, 0x54 / 255, 1.0),   # 64ths
-]
-# Beat subdivisions matching OFS beatMultiples[]
-_BEAT_MULTIPLES = [
-    4.0, 4.0 * (1 / 2), 4.0 * (1 / 4),  4.0 * (1 / 8),
-    4.0 * (1 / 12), 4.0 * (1 / 16), 4.0 * (1 / 24),
-    4.0 * (1 / 32), 4.0 * (1 / 48), 4.0 * (1 / 64),
-]
+# ── Tempo overlay beat colors — built from shared BEAT_COLORS_RGBA ────────────
+_TEMPO_BEAT_COLORS = [_col32(*c) for c in BEAT_COLORS_RGBA]
 
 
 class ScriptTimeline:
@@ -160,6 +144,7 @@ class ScriptTimeline:
     # ──────────────────────────────────────────────────────────────────────
 
     def Init(self) -> None:
+        """Initialise the timeline. Mirrors ``ScriptTimeline::Init``."""
         pass
 
     def Update(self) -> None:
@@ -437,7 +422,7 @@ class ScriptTimeline:
         visible_time = t_end - t_start
         if visible_time <= 0 or bpm <= 0:
             return
-        beat_time = (60.0 / bpm) * _BEAT_MULTIPLES[measure_idx]
+        beat_time = (60.0 / bpm) * BEAT_MULTIPLES[measure_idx]
         if beat_time <= 0:
             return
 
@@ -450,7 +435,7 @@ class ScriptTimeline:
         line_count = visible_beats + 2
 
         # "thing" = subdivisions per whole measure at this measure_idx
-        thing = max(1, int(round(1.0 / (_BEAT_MULTIPLES[measure_idx] / 4.0))))
+        thing = max(1, int(round(1.0 / (BEAT_MULTIPLES[measure_idx] / 4.0))))
 
         for i in range(-int(beat_offset_s / beat_time), line_count):
             beat_idx = invisible_prev_beats + i
@@ -564,15 +549,15 @@ class ScriptTimeline:
                     col += 2
 
         # Find visible actions (dots only — strictly within the viewport)
-        actions = script.actions.get_actions_in_range(
+        actions = script.actions.GetActionsInRange(
             int(t_start * 1000), int(t_end * 1000)
         )
 
         # For line drawing we also need the action immediately before t_start
         # and the action immediately after t_end so that lines crossing the
         # viewport boundary are rendered correctly (fixes missing-line bug).
-        prev_edge = script.actions.get_previous_action_behind(t_start)
-        next_edge = script.actions.get_next_action_ahead(t_end)
+        prev_edge = script.actions.GetPreviousActionBehind(t_start)
+        next_edge = script.actions.GetNextActionAhead(t_end)
         line_actions = (
             ([prev_edge] if prev_edge is not None else [])
             + list(actions)
@@ -597,7 +582,7 @@ class ScriptTimeline:
                         for j in range(SUBDIVS + 1):
                             frac   = j / SUBDIVS
                             at_ms  = prev_action.at + (a.at - prev_action.at) * frac
-                            pos    = script.actions.interpolate_spline(at_ms)
+                            pos    = script.actions.InterpolateSpline(at_ms)
                             px     = self._time_to_x(at_ms / 1000.0, x, w, t_start, t_end)
                             py     = self._pos_to_y(pos, y, h)
                             pts.append(ImVec2(px, py))
@@ -674,7 +659,7 @@ class ScriptTimeline:
         # ── Per-track border (OFS: green=active, slider-grab=has-sel, white=default)
         if is_active:
             border_col = _col32(0,       180/255, 0,       1.0)  # OFS: (0,180,0)
-        elif script.has_selection():
+        elif script.HasSelection():
             border_col = _col32(0.37,    0.44,    0.74,    1.0)  # ImGuiCol_SliderGrabActive
         else:
             border_col = _col32(1.0,     1.0,     1.0,     1.0)  # white
@@ -755,7 +740,7 @@ class ScriptTimeline:
 
         # ── Middle double-click → clear active script selection ────────────────
         if is_item_hovered and imgui.is_mouse_double_clicked(2) and active_script:
-            active_script.clear_selection()
+            active_script.ClearSelection()
 
         # ── Store right-clicked track for context menu ─────────────────────────
         if imgui.is_mouse_clicked(1) and is_item_hovered:
@@ -793,8 +778,8 @@ class ScriptTimeline:
                 end_t    = t_start + vt * mx_rel
                 if (end_t - start_t) > 0.008:   # OFS 8 ms threshold
                     if not io.key_ctrl:          # Ctrl = add to existing selection
-                        active_script.clear_selection()
-                    active_script.select_time(start_t, end_t)
+                        active_script.ClearSelection()
+                    active_script.SelectTime(start_t, end_t)
 
         # ── Clean up drag state when button released ───────────────────────────
         if not is_item_active and not self._is_selecting:
@@ -825,8 +810,8 @@ class ScriptTimeline:
             if shift_held:
                 if hit_action is not None:
                     # Shift+click on dot → begin drag
-                    hit_script.clear_selection()
-                    hit_script.select_action(hit_action)
+                    hit_script.ClearSelection()
+                    hit_script.SelectAction(hit_action)
                     self._drag_action_ref = hit_action
                     self._drag_script_idx = hit_idx
                     self._drag_started    = False
@@ -953,7 +938,7 @@ class ScriptTimeline:
             return (None, None, -1)
 
         PAD = (HIT_R / avail.x * (t_end - t_start)) if avail.x > 0 else 0.0
-        for a in script.actions.get_actions_in_range(
+        for a in script.actions.GetActionsInRange(
             int((t_start - PAD) * 1000), int((t_end + PAD) * 1000)
         ):
             ax = self._time_to_x(a.at / 1000.0, win_pos.x, avail.x, t_start, t_end)

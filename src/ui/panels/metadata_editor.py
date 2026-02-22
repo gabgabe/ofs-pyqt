@@ -135,7 +135,7 @@ class MetadataEditorWindow:
 
         # ── Buttons ────────────────────────────────────────────────────
         if imgui.button("Save##meta", ImVec2(80, 0)):
-            project.save()
+            project.Save()
         if imgui.is_item_hovered():
             imgui.set_tooltip("Save project with updated metadata")
 

@@ -1,1 +1,1 @@
-# OFS-PyQt source package
+"""OFS-PyQt — Python port of OpenFunscripter."""

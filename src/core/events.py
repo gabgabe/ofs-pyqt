@@ -30,6 +30,8 @@ from typing import Callable, Dict, Any, List
 # ---------------------------------------------------------------------------
 
 class OFS_Events:
+    """Event name constants mirroring the OFS C++ event identifiers (``OFS_Event.h``)."""
+
     # Video
     VIDEO_LOADED          = "VideoLoaded"
     DURATION_CHANGE       = "DurationChange"
@@ -66,12 +68,12 @@ class OFS_Events:
 
 class EventSystem:
     """
-    Thread-safe event bus.
+    Callable-based event bus. Mirrors ``OFS::EventSystem`` / ``EV`` namespace.
 
-    All EV.enqueue() calls are deferred and processed on the next EV.process()
-    call, which must be called from the main thread (just like OFS EV::Process()).
+    All ``EV.enqueue()`` calls are deferred and processed on the next ``EV.process()``
+    call, which must be called from the main thread (like ``EV::Process()`` in C++).
 
-    EV.dispatch() is immediate / synchronous — use for same-frame reactions.
+    ``EV.dispatch()`` is immediate / synchronous — use for same-frame reactions.
     """
 
     _instance: "EventSystem | None" = None

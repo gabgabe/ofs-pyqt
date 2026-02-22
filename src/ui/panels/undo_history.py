@@ -14,7 +14,7 @@ from src.core.undo_system import UndoSystem, StateType, state_label
 
 
 class UndoHistoryWindow:
-    """OFS Undo History panel."""
+    """OFS Undo History panel. Mirrors the undo-history UI in ``OFS_UndoSystem`` (OFS_UndoSystem.h / .cpp)."""
 
     WindowId = "Undo History###UndoHistory"
 
@@ -24,6 +24,7 @@ class UndoHistoryWindow:
     # ──────────────────────────────────────────────────────────────────────
 
     def Show(self, undo: UndoSystem) -> None:
+        """Render the undo-history list. Mirrors ``OFS_UndoSystem::ShowUndoRedoHistory``."""
         _, self._auto_scroll = imgui.checkbox("Auto-scroll", self._auto_scroll)
 
         imgui.separator()
@@ -52,7 +53,7 @@ class UndoHistoryWindow:
                     imgui.pop_style_color()
                 if clicked and not is_cur:
                     # Jump to state i+1 (after this entry is applied)
-                    undo.jump_to(i + 1)
+                    undo.JumpTo(i + 1)
 
             # Current position marker
             imgui.push_style_color(imgui.Col_.text, ImVec4(1.0, 1.0, 0.2, 1.0))
@@ -69,7 +70,7 @@ class UndoHistoryWindow:
                 clicked, _ = imgui.selectable(f"{idx:3d}  {name}", False)
                 imgui.pop_style_color()
                 if clicked:
-                    undo.jump_to(idx + 1)
+                    undo.JumpTo(idx + 1)
 
             if self._auto_scroll and imgui.get_scroll_y() >= imgui.get_scroll_max_y():
                 imgui.set_scroll_here_y(1.0)

@@ -35,7 +35,7 @@ def _discover_languages() -> List[str]:
 
 
 class PreferencesWindow:
-    """OFS Preferences panel."""
+    """OFS Preferences panel. Mirrors ``OFS_Preferences`` (OFS_Preferences.h / .cpp)."""
 
     WindowId = "Preferences###Preferences"
 
@@ -104,7 +104,7 @@ class PreferencesWindow:
     # ──────────────────────────────────────────────────────────────────────
 
     def Show(self) -> bool:
-        """Returns True if window should stay open."""
+        """Render the preferences window. Mirrors ``OFS_Preferences::ShowPreferencesWindow``."""
         is_open = True
         imgui.set_next_window_size(ImVec2(460, 400), imgui.Cond_.first_use_ever)
         opened, is_open = imgui.begin(

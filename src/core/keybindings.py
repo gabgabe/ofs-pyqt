@@ -52,6 +52,8 @@ def _split_mods(mods: int) -> List[int]:
 
 @dataclass
 class KeyChord:
+    """A key combination (modifier mask + key + optional repeat). Mirrors ``OFS::KeyChord``."""
+
     mods: int       = 0        # imgui.Key.mod_ctrl | imgui.Key.mod_shift, etc.
     key:  int       = 0        # imgui.Key.*
     repeat: bool    = False    # held-down repeat
@@ -63,6 +65,8 @@ class KeyChord:
 
 @dataclass
 class KeyBinding:
+    """A registered action with its key chords and callback. Mirrors ``OFS::KeyBinding``."""
+
     id:          str                   # unique snake_case id (OFS-exact)
     description: str                   # human-readable label
     fn:          Callable              # callback
@@ -74,6 +78,8 @@ class KeyBinding:
 
 @dataclass
 class BindingGroup:
+    """Named group of related key bindings. Mirrors ``OFS::BindingGroup``."""
+
     id:    str
     label: str
     bindings: List[str] = field(default_factory=list)  # list of binding ids
@@ -85,7 +91,8 @@ class BindingGroup:
 
 class OFS_KeybindingSystem:
     """
-    Python port of OFS_KeybindingSystem.
+    Keybinding manager. Mirrors ``OFS_KeybindingSystem`` (OFS_KeybindingSystem.h).
+
     RegisterGroup / RegisterAction / ProcessKeybindings / ShowModal.
     """
 
@@ -103,6 +110,7 @@ class OFS_KeybindingSystem:
     # ------------------------------------------------------------------
 
     def RegisterGroup(self, id_: str, label: str) -> None:
+        """Register a named binding group. Mirrors ``OFS_KeybindingSystem::RegisterGroup``."""
         if id_ not in self._groups:
             self._groups[id_] = BindingGroup(id=id_, label=label)
             self._group_order.append(id_)
@@ -117,7 +125,7 @@ class OFS_KeybindingSystem:
         repeat: bool = False,
     ) -> None:
         """
-        Register an action.
+        Register an action with default key chords. Mirrors ``OFS_KeybindingSystem::RegisterAction``.
 
         chords format: list of (mods, key) or (mods, key, repeat)
         """
@@ -140,10 +148,9 @@ class OFS_KeybindingSystem:
 
     def ProcessKeybindings(self) -> None:
         """
-        Call once per frame from the main update loop.
-        Fires callbacks for pressed key chords.
-        ImGui must have processed input before this is called.
-        Sets self.any_key_active = True if any binding fired this frame.
+        Poll ImGui input and fire matching binding callbacks. Mirrors ``OFS_KeybindingSystem::ProcessKeybindings``.
+
+        Call once per frame. Sets ``self.any_key_active = True`` if any binding fired.
         """
         self.any_key_active = False
         # Don't fire bindings when a text input widget has focus
@@ -210,9 +217,11 @@ class OFS_KeybindingSystem:
     # ImGui window
 
     def ShowModal(self) -> None:
+        """Open the keybinding editor window. Mirrors ``OFS_KeybindingSystem::ShowModal``."""
         self._show_window = True
 
     def RenderKeybindingWindow(self) -> None:
+        """Render the keybinding editor ImGui window. Mirrors ``OFS_KeybindingSystem::RenderKeybindingWindow``."""
         if not self._show_window:
             return
 
@@ -293,6 +302,7 @@ class OFS_KeybindingSystem:
             log.warning(f"Failed to load keybindings: {e}")
 
     def Save(self, path: Path) -> None:
+        """Persist user key overrides to a JSON file. Mirrors ``OFS_KeybindingSystem::Save``."""
         data: dict = {}
         for bid, binding in self._bindings.items():
             if binding.user_chords:

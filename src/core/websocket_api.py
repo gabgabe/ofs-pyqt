@@ -54,7 +54,7 @@ def _event(name: str, data: Dict[str, Any]) -> str:
 
 class WebSocketAPI:
     """
-    Lightweight WebSocket server that exposes OFS state to external clients.
+    WebSocket server exposing OFS state to external clients. Mirrors the OFS WebSocket extension protocol.
 
     Thread-safe: public methods may be called from the main thread;
     the asyncio event loop runs on a dedicated daemon thread.
@@ -70,7 +70,7 @@ class WebSocketAPI:
         self._running = False
         self._stop_event: Optional[asyncio.Event] = None
 
-        # State getters (registered by app via set_state_getters)
+        # State getters (registered by app via SetStateGetters)
         self._get_time:       Optional[Callable[[], float]] = None
         self._get_duration:   Optional[Callable[[], float]] = None
         self._get_playing:    Optional[Callable[[], bool]]  = None
@@ -78,7 +78,7 @@ class WebSocketAPI:
         self._get_media:      Optional[Callable[[], str]]   = None
         self._get_funscripts: Optional[Callable[[], List]]  = None
 
-        # Command callbacks (registered by app via set_callbacks)
+        # Command callbacks (registered by app via SetCallbacks)
         self._on_change_time:          Optional[Callable[[float], None]] = None
         self._on_change_play:          Optional[Callable[[bool], None]]  = None
         self._on_change_playbackspeed: Optional[Callable[[float], None]] = None
@@ -88,12 +88,12 @@ class WebSocketAPI:
         self._pending_data:    Dict[str, str]                 = {}
 
     # ------------------------------------------------------------------
-    # Public configuration  (called from main thread before/after start)
+    # Public configuration  (called from main thread before/after Start)
     # ------------------------------------------------------------------
 
-    def set_state_getters(self, **kwargs: Callable) -> None:
+    def SetStateGetters(self, **kwargs: Callable) -> None:
         """
-        Register getter callables for the on-connect UpdateAll dump.
+        Register getter callables for the on-connect state dump. Mirrors ``OFS_WebSocketApi::SetStateGetters``.
 
         Accepted keys: get_time, get_duration, get_playing, get_speed,
         get_media, get_funscripts.
@@ -103,11 +103,11 @@ class WebSocketAPI:
             if hasattr(self, attr):
                 setattr(self, attr, val)
             else:
-                log.warning("WebSocketAPI.set_state_getters: unknown key %r", key)
+                log.warning("WebSocketAPI.SetStateGetters: unknown key %r", key)
 
-    def set_callbacks(self, **kwargs: Callable) -> None:
+    def SetCallbacks(self, **kwargs: Callable) -> None:
         """
-        Register command handler callables.
+        Register inbound command handler callables. Mirrors ``OFS_WebSocketApi::SetCallbacks``.
 
         Accepted keys: on_change_time, on_change_play, on_change_playbackspeed.
         """
@@ -116,14 +116,14 @@ class WebSocketAPI:
             if hasattr(self, attr):
                 setattr(self, attr, val)
             else:
-                log.warning("WebSocketAPI.set_callbacks: unknown key %r", key)
+                log.warning("WebSocketAPI.SetCallbacks: unknown key %r", key)
 
     # ------------------------------------------------------------------
     # Server lifecycle
     # ------------------------------------------------------------------
 
-    def start(self) -> bool:
-        """Start the WebSocket server in a background thread. Returns True on success."""
+    def Start(self) -> bool:
+        """Start the WebSocket server in a background thread. Mirrors ``OFS_WebSocketApi::Start``."""
         if not _HAS_WEBSOCKETS:
             log.warning("websockets package not installed; WebSocket API disabled.")
             return False
@@ -139,8 +139,8 @@ class WebSocketAPI:
                  self._host, self._port, WS_PATH)
         return True
 
-    def stop(self) -> None:
-        """Gracefully shut down the server."""
+    def Stop(self) -> None:
+        """Gracefully shut down the WebSocket server. Mirrors ``OFS_WebSocketApi::Stop``."""
         if not self._running or self._loop is None:
             return
         self._running = False
@@ -152,30 +152,37 @@ class WebSocketAPI:
     # Outbound broadcasts  (called from main thread)
     # ------------------------------------------------------------------
 
-    def broadcast_time_change(self, time_s: float) -> None:
+    def BroadcastTimeChange(self, time_s: float) -> None:
+        """Broadcast a ``time_change`` event to all connected clients."""
         self._broadcast_nowait(_event("time_change", {"time": round(time_s, 4)}))
 
-    def broadcast_play_change(self, playing: bool) -> None:
+    def BroadcastPlayChange(self, playing: bool) -> None:
+        """Broadcast a ``play_change`` event to all connected clients."""
         self._broadcast_nowait(_event("play_change", {"playing": bool(playing)}))
 
-    def broadcast_duration_change(self, duration_s: float) -> None:
+    def BroadcastDurationChange(self, duration_s: float) -> None:
+        """Broadcast a ``duration_change`` event to all connected clients."""
         self._broadcast_nowait(_event("duration_change",
                                       {"duration": round(duration_s, 3)}))
 
-    def broadcast_media_change(self, path: str) -> None:
+    def BroadcastMediaChange(self, path: str) -> None:
+        """Broadcast a ``media_change`` event to all connected clients."""
         self._broadcast_nowait(_event("media_change", {"path": path}))
 
-    def broadcast_playbackspeed_change(self, speed: float) -> None:
+    def BroadcastPlaybackspeedChange(self, speed: float) -> None:
+        """Broadcast a ``playbackspeed_change`` event to all connected clients."""
         self._broadcast_nowait(_event("playbackspeed_change",
                                       {"speed": round(speed, 4)}))
 
-    def broadcast_project_change(self) -> None:
+    def BroadcastProjectChange(self) -> None:
+        """Broadcast a ``project_change`` event to all connected clients."""
         self._broadcast_nowait(_event("project_change", {}))
 
-    def broadcast_funscript_change(self, name: str, actions) -> None:
+    def BroadcastFunscriptChange(self, name: str, actions) -> None:
         """
-        Broadcast a full funscript with a 200 ms debounce per script name.
-        Rapid successive calls for the same name are coalesced into one send.
+        Broadcast a ``funscript_change`` event with 200 ms per-script debounce.
+
+        Rapid successive calls for the same *name* are coalesced into one send.
         """
         if not self._running or self._loop is None:
             return
@@ -188,23 +195,24 @@ class WebSocketAPI:
             self._schedule_funscript(name), self._loop
         )
 
-    def broadcast_funscript_remove(self, name: str) -> None:
+    def BroadcastFunscriptRemove(self, name: str) -> None:
+        """Broadcast a ``funscript_remove`` event to all connected clients."""
         self._broadcast_nowait(_event("funscript_remove", {"name": name}))
 
     # --- Backward-compat aliases so existing call-sites keep working ---
 
-    def broadcast_position(self, time_s: float,
+    def BroadcastPosition(self, time_s: float,
                            pos: Optional[float] = None) -> None:
-        self.broadcast_time_change(time_s)
+        self.BroadcastTimeChange(time_s)
 
-    def broadcast_duration(self, duration_s: float) -> None:
-        self.broadcast_duration_change(duration_s)
+    def BroadcastDuration(self, duration_s: float) -> None:
+        self.BroadcastDurationChange(duration_s)
 
-    def broadcast_playing(self, playing: bool) -> None:
-        self.broadcast_play_change(playing)
+    def BroadcastPlaying(self, playing: bool) -> None:
+        self.BroadcastPlayChange(playing)
 
-    def broadcast_actions(self, script_name: str, actions: list) -> None:
-        self.broadcast_funscript_change(script_name, actions)
+    def BroadcastActions(self, script_name: str, actions: list) -> None:
+        self.BroadcastFunscriptChange(script_name, actions)
 
     # ------------------------------------------------------------------
     # Properties

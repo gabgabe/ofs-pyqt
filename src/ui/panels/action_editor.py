@@ -18,7 +18,7 @@ from src.core.undo_system  import UndoSystem, StateType
 
 
 class ActionEditorWindow:
-    """OFS Action Editor panel."""
+    """OFS Action Editor panel. Mirrors ``OFS_ActionEditor`` (src/UI in the C++ tree)."""
 
     WindowId = "Action Editor###ActionEditor"
 
@@ -35,6 +35,7 @@ class ActionEditorWindow:
         scripting,          # ScriptingMode (avoids circular import)
         undo:    UndoSystem,
     ) -> None:
+        """Render the action-editor button grid. Mirrors ``OFS_ActionEditor::ShowActionEditor``."""
         if not player.VideoLoaded():
             imgui.text_disabled("No video loaded")
             return
@@ -68,7 +69,7 @@ class ActionEditorWindow:
         cur_pos: Optional[int] = None
         if script:
             ft = scripting.LogicalFrameTime()
-            closest = script.get_action_at_time(player.CurrentTime(), ft * 0.5)
+            closest = script.GetActionAtTime(player.CurrentTime(), ft * 0.5)
             if closest:
                 cur_pos = closest.pos
 
@@ -89,8 +90,8 @@ class ActionEditorWindow:
                     action = FunscriptAction(
                         int(player.CurrentTime() * 1000), pos
                     )
-                    undo.snapshot(StateType.ADD_EDIT_ACTIONS, script)
-                    scripting.add_edit_action(action)
+                    undo.Snapshot(StateType.ADD_EDIT_ACTIONS, script)
+                    scripting.AddEditAction(action)
 
             if is_cur:
                 imgui.pop_style_color(2)
@@ -104,7 +105,7 @@ class ActionEditorWindow:
         # Quick-edit display of the nearest action
         if script:
             ft = scripting.LogicalFrameTime()
-            closest = script.get_action_at_time(player.CurrentTime(), ft)
+            closest = script.GetActionAtTime(player.CurrentTime(), ft)
             if closest:
                 imgui.text(
                     f"Nearest action: {closest.at} ms  →  {closest.pos}"

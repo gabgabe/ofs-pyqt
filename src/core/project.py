@@ -128,7 +128,7 @@ def _find_related_scripts(root_path: str) -> List[str]:
 # ---------------------------------------------------------------------------
 
 class ProjectState:
-    """Persistent state embedded in the .ofsp file."""
+    """Persistent project state embedded in the .ofsp file. Mirrors ``OFS_Project::ProjectState``."""
 
     def __init__(self):
         self.relative_media_path: str = ""
@@ -170,21 +170,21 @@ class OFS_Project:
 
         # Open via funscript
         project = OFS_Project()
-        project.import_from_funscript("/path/to/script.funscript")
+        project.ImportFromFunscript("/path/to/script.funscript")
 
         # Open via media
         project = OFS_Project()
-        project.import_from_media("/path/to/video.mp4")
+        project.ImportFromMedia("/path/to/video.mp4")
 
         # Load existing project file
         project = OFS_Project()
-        project.load("/path/to/project.ofsp")
+        project.Load("/path/to/project.ofsp")
 
         # Save
-        project.save()
+        project.Save()
 
         # Export all funscripts
-        project.export_funscripts()
+        project.ExportFunscripts()
     """
 
     def __init__(self) -> None:
@@ -246,8 +246,8 @@ class OFS_Project:
     # Load / Import
     # ------------------------------------------------------------------
 
-    def load(self, path: str) -> bool:
-        """Load a .ofsp project file."""
+    def Load(self, path: str) -> bool:
+        """Load a .ofsp project file. Mirrors ``OFS_Project::Load``."""
         if self._valid:
             log.warning("Project already loaded; call reset() first.")
             return False
@@ -297,8 +297,8 @@ class OFS_Project:
         log.info(f"Loaded project: {path} ({len(self.funscripts)} scripts)")
         return True
 
-    def import_from_funscript(self, path: str) -> bool:
-        """Create a project from an existing .funscript file."""
+    def ImportFromFunscript(self, path: str) -> bool:
+        """Create a project from an existing .funscript file. Mirrors ``OFS_Project::ImportFromFunscript``."""
         if self._valid:
             log.warning("Project already loaded.")
             return False
@@ -336,8 +336,8 @@ class OFS_Project:
 
         return self._valid
 
-    def import_from_media(self, path: str) -> bool:
-        """Create a project from a media file; create an empty funscript."""
+    def ImportFromMedia(self, path: str) -> bool:
+        """Create a project from a media file; create an empty funscript. Mirrors ``OFS_Project::ImportFromMedia``."""
         if self._valid:
             log.warning("Project already loaded.")
             return False
@@ -380,8 +380,8 @@ class OFS_Project:
     # Save / Export
     # ------------------------------------------------------------------
 
-    def save(self, path: Optional[str] = None, clear_unsaved: bool = True) -> bool:
-        """Save project to .ofsp file (JSON)."""
+    def Save(self, path: Optional[str] = None, clear_unsaved: bool = True) -> bool:
+        """Save project to .ofsp file (JSON). Mirrors ``OFS_Project::Save``."""
         save_path = path or self._path
         if not save_path:
             log.error("No project path set.")
@@ -426,9 +426,9 @@ class OFS_Project:
 
         return True
 
-    def export_funscripts(self, output_dir: Optional[str] = None) -> int:
+    def ExportFunscripts(self, output_dir: Optional[str] = None) -> int:
         """
-        Export all funscripts as .funscript files.
+        Export all funscripts as .funscript files. Mirrors ``OFS_Project::ExportFunscripts``.
 
         Parameters
         ----------
@@ -452,42 +452,44 @@ class OFS_Project:
                 log.warning(f"Script {i} has no path — skipping export.")
                 continue
 
-            if script.save(out_path):
+            if script.Save(out_path):
                 count += 1
         return count
 
-    def export_funscript(self, output_path: str, idx: int) -> bool:
-        """Export a single funscript by index."""
+    def ExportFunscript(self, output_path: str, idx: int) -> bool:
+        """Export a single funscript by index. Mirrors ``OFS_Project::ExportFunscript``."""
         if not 0 <= idx < len(self.funscripts):
             log.error(f"Script index {idx} out of range.")
             return False
         script = self.funscripts[idx]
-        if script.save(output_path):
+        if script.Save(output_path):
             script.relative_path = self._make_path_relative(output_path)
             return True
         return False
 
-    def quick_export(self) -> bool:
+    def QuickExport(self) -> bool:
         """Export ALL funscripts to their stored paths.
 
-        Mirrors OFS quickExport() which calls ExportFunscripts() (no args),
+        Mirrors ``OFS_Project::quickExport`` which calls ExportFunscripts() (no args),
         writing every script to its original path next to the project file.
         """
-        count = self.export_funscripts(output_dir=None)
+        count = self.ExportFunscripts(output_dir=None)
         return count > 0
 
     # ------------------------------------------------------------------
     # Script management
     # ------------------------------------------------------------------
 
-    def add_funscript(self, path: str) -> bool:
+    def AddFunscript(self, path: str) -> bool:
         """
-        Add an existing or new funscript to the project.
+        Add an existing or new funscript to the project. Mirrors ``OFS_Project::AddFunscript``.
+
         If path does not exist an empty script is created at that path.
         """
         return self._load_funscript(path)
 
-    def remove_funscript(self, idx: int) -> None:
+    def RemoveFunscript(self, idx: int) -> None:
+        """Remove a funscript from the project by index. Mirrors ``OFS_Project::RemoveFunscript``."""
         if 0 <= idx < len(self.funscripts):
             removed = self.funscripts.pop(idx)
             log.info(f"Removed script: {removed.title}")
@@ -513,7 +515,8 @@ class OFS_Project:
     # Misc
     # ------------------------------------------------------------------
 
-    def has_unsaved_edits(self) -> bool:
+    def HasUnsavedEdits(self) -> bool:
+        """Return True if any loaded funscript has unsaved changes. Mirrors ``OFS_Project::HasUnsavedEdits``."""
         return any(s.unsaved_edits for s in self.funscripts)
 
     def reset(self) -> None:
@@ -521,7 +524,7 @@ class OFS_Project:
         self.funscripts.clear()
         self.state = ProjectState()
         self.metadata = FunscriptMetadata()
-        self.undo_system.clear()
+        self.undo_system.Clear()
         self._path = ""
         self._valid = False
         self._errors.clear()
@@ -586,12 +589,12 @@ class OFS_Project:
     def _load_funscript(self, path: str) -> bool:
         """Load (or create empty) a Funscript and append it to self.funscripts."""
         if os.path.isfile(path):
-            script = Funscript.load(path)
+            script = Funscript.Load(path)
         else:
             script = self._make_empty_script(path)
 
         script.relative_path = self._make_path_relative(path)
-        script.init_undo_system()
+        script.InitUndoSystem()
         self.funscripts.append(script)
         return True
 

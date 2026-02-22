@@ -55,12 +55,11 @@ except ImportError:
 
 class VideoThumbnailManager:
     """
-    Secondary mpv render context that decodes video frames into a small FBO
-    for use as timeline hover thumbnails.
+    Secondary mpv render context for timeline hover thumbnails. Mirrors ``OFS::VideoThumbnailManager``.
 
     All GL calls happen on the main thread (same context as the primary player).
     mpv property observers run on mpv's internal thread and only set a
-    threading.Event, so no GL calls are made from the background thread.
+    ``threading.Event``, so no GL calls are made from the background thread.
     """
 
     def __init__(self) -> None:
@@ -87,8 +86,9 @@ class VideoThumbnailManager:
 
     def Init(self) -> bool:
         """
-        Create the thumbnail mpv + render context.
-        Must be called while the OpenGL context is current (i.e. from _post_init).
+        Create the thumbnail mpv + render context. Mirrors ``VideoThumbnailManager::Init``.
+
+        Must be called while the OpenGL context is current.
         Returns True on success; falls back to no-op on failure.
         """
         if not _MPV_AVAILABLE:
@@ -134,6 +134,7 @@ class VideoThumbnailManager:
         return True
 
     def Shutdown(self) -> None:
+        """Destroy the thumbnail render context and terminate mpv. Mirrors ``VideoThumbnailManager::Shutdown``."""
         if self._render_ctx is not None:
             try:
                 self._render_ctx.free()
@@ -153,7 +154,7 @@ class VideoThumbnailManager:
     # ------------------------------------------------------------------
 
     def SetVideo(self, path: str) -> None:
-        """Load the given path into the thumbnail player (paused)."""
+        """Load *path* into the thumbnail player (paused). Mirrors ``VideoThumbnailManager::SetVideo``."""
         if not self._mpv:
             return
         if path == self._current_path:
@@ -168,8 +169,9 @@ class VideoThumbnailManager:
 
     def RequestFrame(self, path: str, time_s: float) -> None:
         """
-        Queue a thumbnail at *time_s* in *path*.
-        Debounced — actual seek only happens after THUMB_DEBOUNCE_S of inactivity.
+        Queue a thumbnail at *time_s* in *path*. Mirrors ``VideoThumbnailManager::RequestFrame``.
+
+        Debounced — actual seek only happens after ``THUMB_DEBOUNCE_S`` of inactivity.
         """
         self._pending_path = path
         self._pending_time = time_s
@@ -177,8 +179,9 @@ class VideoThumbnailManager:
 
     def Update(self) -> None:
         """
+        Per-frame update: apply pending seeks and render into the FBO. Mirrors ``VideoThumbnailManager::Update``.
+
         Must be called every frame from the main thread with GL context current.
-        Handles the debounced seek and renders any pending mpv frame into the FBO.
         """
         if not self._mpv or not self._render_ctx:
             return

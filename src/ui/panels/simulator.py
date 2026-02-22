@@ -98,7 +98,10 @@ _DEFAULT_STATE: dict = {
 
 
 class SimulatorWindow:
-    """OFS Simulator panel — visual position indicator."""
+    """OFS Simulator panel — visual position indicator.
+
+    Mirrors ``OFS_ScriptSimulator`` (OFS_ScriptSimulator.h / .cpp).
+    """
 
     WindowId = "Simulator###Simulator"
 
@@ -197,7 +200,7 @@ class SimulatorWindow:
         player: OFS_Videoplayer,
         script: Optional[Funscript],
     ) -> None:
-        """Render controls + draw bar via foreground draw list."""
+        """Render controls + draw bar via foreground draw list. Mirrors ``OFS_ScriptSimulator::ShowSimulator``."""
         if not self._initialized:
             self._center_simulator()
             self._initialized = True
@@ -322,8 +325,8 @@ class SimulatorWindow:
             return 0.0
         t_ms = player.CurrentTime() * 1000.0
         if self._spline_mode:
-            return script.actions.interpolate_spline(t_ms)
-        return script.actions.interpolate(t_ms)
+            return script.actions.InterpolateSpline(t_ms)
+        return script.actions.Interpolate(t_ms)
 
     # ──────────────────────────────────────────────────────────────────────
     # Drag handling (P1, P2, centre)
@@ -494,12 +497,12 @@ class SimulatorWindow:
         # ── Indicators (prev / next action) ────────────────────────────
         if self._enable_indicators and script is not None and player.VideoLoaded():
             t = player.CurrentTime()
-            prev_a = script.get_action_at_time(t, 0.02)
+            prev_a = script.GetActionAtTime(t, 0.02)
             if prev_a is None:
-                prev_a = script.get_previous_action_behind(t)
-            next_a = script.get_next_action_ahead(t)
+                prev_a = script.GetPreviousActionBehind(t)
+            next_a = script.GetNextActionAhead(t)
             if prev_a is not None and next_a is prev_a:
-                next_a = script.get_next_action_ahead(prev_a.at / 1000.0)
+                next_a = script.GetNextActionAhead(prev_a.at / 1000.0)
 
             for action in (prev_a, next_a):
                 if action is None:
