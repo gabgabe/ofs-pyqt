@@ -3,16 +3,21 @@ TrackInfoWindow — Inspector panel for the selected DAW track.
 
 Shows and allows editing of:
 * Track name
-* Start time (offset on the global timeline)
-* Duration (effective clip length)
-* End time  (offset + duration)
-* For VIDEO tracks: trim in / trim out (media-local in/out points)
+* Start time (offset on the global timeline)  — moves clip
+* Duration (effective clip length on timeline) — trims end for VIDEO tracks
+* End time  (offset + duration)                — moves clip end
+* For VIDEO tracks: source duration, trim in / trim out
 
-Editing start/end/duration keeps the other fields in sync:
-  • Changing start  → shifts the clip, duration stays.
-  • Changing end    → adjusts duration.
-  • Changing duration → adjusts end.
-  • Changing trim in/out → adjusts duration (and visual clip).
+Logic for VIDEO tracks:
+  • Start (+/-)   → shifts the clip (offset); duration & trim stay.
+  • End (+/-)     → shifts the clip end (offset changes, duration stays).
+  • Duration (+/-)→ adjusts how much of the video is shown by trimming
+                    the tail (trim_out).  Clamped to [trim_in+0.001 .. media_duration].
+  • Trim In (+/-) → cuts the head of the media; duration shrinks.
+  • Trim Out (+/-)→ cuts the tail of the media; duration shrinks.
+  • "Trim In → Cursor" sets trim_in to cursor position in media-local time.
+  • "Trim Out → Cursor" sets trim_out to cursor position in media-local time.
+  • "Reset Trim" restores full source range.
 """
 
 from __future__ import annotations
@@ -36,6 +41,29 @@ def _fmt_mmss(t: float) -> str:
     m = int(t) // 60
     s = t - m * 60
     return f"{m:02d}:{s:06.3f}"
+
+
+# ── Float-field helper ────────────────────────────────────────────────
+# imgui.input_float returns True on every value change (including +/-
+# button clicks).  We commit immediately so the step buttons work.
+
+def _field_float(label: str, value: float, step: float = 0.1,
+                 fmt: str = "%.3f s", min_v: float = 0.0,
+                 max_v: float = 0.0) -> tuple[bool, float]:
+    """Render an input_float and return (changed, new_value).
+
+    Commits on every change so +/- step buttons take effect instantly.
+    If *max_v* > *min_v*, clamps the result into [min_v, max_v].
+    Otherwise only clamps to >= min_v.
+    """
+    ch, nv = imgui.input_float(label, value, step, step * 10.0, fmt)
+    if ch:
+        if max_v > min_v:
+            nv = max(min_v, min(nv, max_v))
+        else:
+            nv = max(min_v, nv)
+        return True, nv
+    return False, value
 
 
 class TrackInfoWindow:
@@ -72,6 +100,7 @@ class TrackInfoWindow:
             return
 
         changed = False
+        is_video = trk.track_type == TrackType.VIDEO
 
         # ── Track name ─────────────────────────────────────────────────
         imgui.text("Track")
@@ -91,66 +120,61 @@ class TrackInfoWindow:
             TrackType.TRIGGER: "TRIGGER",
         }
         imgui.text(f"Type: {type_labels.get(trk.track_type, '?')}")
-
         imgui.spacing()
 
         # ── Time fields ────────────────────────────────────────────────
         col_w = imgui.get_content_region_avail().x
         field_w = max(80.0, col_w - 100.0)
 
-        # Start (offset)
+        # For VIDEO tracks we need the source duration to clamp everything
+        md = trk.media_duration if (is_video and trk.media_duration > 0) else 0.0
+
+        # ── Start (offset) ─────────────────────────────────────────────
+        # +/- moves the clip on the timeline; duration stays.
         imgui.text("Start")
         imgui.same_line(100)
         imgui.set_next_item_width(field_w)
-        ch, new_start = imgui.input_float("##trk_start", trk.offset, 0.1, 1.0, "%.3f s")
-        if ch and imgui.is_item_deactivated_after_edit():
-            trk.offset = max(0.0, new_start)
+        ch, nv = _field_float("##trk_start", trk.offset, 0.1)
+        if ch:
+            trk.offset = max(0.0, nv)
             changed = True
 
-        # Duration
+        # ── Duration ───────────────────────────────────────────────────
+        # For VIDEO: changing duration trims the tail (adjusts trim_out).
         imgui.text("Duration")
         imgui.same_line(100)
         imgui.set_next_item_width(field_w)
-        ch, new_dur = imgui.input_float("##trk_dur", trk.duration, 0.1, 1.0, "%.3f s")
-        if ch and imgui.is_item_deactivated_after_edit():
-            new_dur = max(0.001, new_dur)
-            trk.duration = new_dur
-            # Sync trim_out for VIDEO tracks
-            if trk.track_type == TrackType.VIDEO:
-                trk.trim_out = trk.trim_in + new_dur
-                md = trk.media_duration if trk.media_duration > 0 else new_dur
-                if trk.trim_out > md:
-                    trk.trim_out = md
-                    trk.duration = trk.trim_out - trk.trim_in
+        max_dur = (md - trk.trim_in) if (is_video and md > 0) else 0.0
+        ch, nv = _field_float("##trk_dur", trk.duration, 0.1,
+                              min_v=0.001, max_v=max_dur if max_dur > 0 else 0.0)
+        if ch:
+            nv = max(0.001, nv)
+            if is_video and md > 0:
+                nv = min(nv, md - trk.trim_in)
+                trk.trim_out = trk.trim_in + nv
+            trk.duration = nv
             changed = True
 
-        # End (read-write — adjusts duration)
+        # ── End (offset + duration) ────────────────────────────────────
+        # +/- moves the clip end; that shifts offset while keeping duration.
         end_t = trk.offset + trk.duration
         imgui.text("End")
         imgui.same_line(100)
         imgui.set_next_item_width(field_w)
-        ch, new_end = imgui.input_float("##trk_end", end_t, 0.1, 1.0, "%.3f s")
-        if ch and imgui.is_item_deactivated_after_edit():
-            new_dur = max(0.001, new_end - trk.offset)
-            trk.duration = new_dur
-            if trk.track_type == TrackType.VIDEO:
-                trk.trim_out = trk.trim_in + new_dur
-                md = trk.media_duration if trk.media_duration > 0 else new_dur
-                if trk.trim_out > md:
-                    trk.trim_out = md
-                    trk.duration = trk.trim_out - trk.trim_in
+        ch, nv = _field_float("##trk_end", end_t, 0.1)
+        if ch:
+            new_end = max(trk.duration, nv)  # end can't be < duration (offset>=0)
+            trk.offset = max(0.0, new_end - trk.duration)
             changed = True
 
         # ── VIDEO-specific trim fields ─────────────────────────────────
-        if trk.track_type == TrackType.VIDEO:
+        if is_video and md > 0:
             imgui.spacing()
             imgui.separator()
             imgui.text("Media Trim")
             imgui.spacing()
 
-            md = trk.media_duration if trk.media_duration > 0 else trk.duration
-
-            # Media duration (read-only)
+            # Source duration (read-only)
             imgui.text("Source")
             imgui.same_line(100)
             imgui.text(f"{_fmt_mmss(md)}  ({md:.3f} s)")
@@ -159,10 +183,10 @@ class TrackInfoWindow:
             imgui.text("Trim In")
             imgui.same_line(100)
             imgui.set_next_item_width(field_w)
-            ch, new_in = imgui.input_float("##trk_trim_in", trk.trim_in, 0.1, 1.0, "%.3f s")
-            if ch and imgui.is_item_deactivated_after_edit():
-                new_in = max(0.0, min(new_in, trk.trim_out - 0.001))
-                trk.trim_in = new_in
+            ch, nv = _field_float("##trk_trim_in", trk.trim_in, 0.1,
+                                  min_v=0.0, max_v=trk.trim_out - 0.001)
+            if ch:
+                trk.trim_in = nv
                 trk.duration = trk.trim_out - trk.trim_in
                 changed = True
 
@@ -170,30 +194,38 @@ class TrackInfoWindow:
             imgui.text("Trim Out")
             imgui.same_line(100)
             imgui.set_next_item_width(field_w)
-            ch, new_out = imgui.input_float("##trk_trim_out", trk.trim_out, 0.1, 1.0, "%.3f s")
-            if ch and imgui.is_item_deactivated_after_edit():
-                new_out = max(trk.trim_in + 0.001, min(new_out, md))
-                trk.trim_out = new_out
+            ch, nv = _field_float("##trk_trim_out", trk.trim_out, 0.1,
+                                  min_v=trk.trim_in + 0.001, max_v=md)
+            if ch:
+                trk.trim_out = nv
                 trk.duration = trk.trim_out - trk.trim_in
                 changed = True
 
             # ── Quick trim buttons ─────────────────────────────────────
             imgui.spacing()
-            if imgui.button("Reset Trim##reset_trim"):
+            if imgui.button("Reset Trim"):
                 trk.trim_in = 0.0
                 trk.trim_out = md
                 trk.duration = md
                 changed = True
+
             imgui.same_line()
-            if imgui.button("Trim to Cursor##trim_cursor"):
-                # Set trim_in to the current transport position (media-local)
+            if imgui.button("Trim In \u2192 Cursor"):
                 tp_pos = timeline_mgr.transport.position
                 media_t = trk.GlobalToMedia(tp_pos)
-                media_t = max(0.0, min(media_t, md - 0.001))
-                if media_t < trk.trim_out:
-                    trk.trim_in = media_t
-                    trk.duration = trk.trim_out - trk.trim_in
-                    changed = True
+                media_t = max(0.0, min(media_t, trk.trim_out - 0.001))
+                trk.trim_in = media_t
+                trk.duration = trk.trim_out - trk.trim_in
+                changed = True
+
+            imgui.same_line()
+            if imgui.button("Trim Out \u2192 Cursor"):
+                tp_pos = timeline_mgr.transport.position
+                media_t = trk.GlobalToMedia(tp_pos)
+                media_t = max(trk.trim_in + 0.001, min(media_t, md))
+                trk.trim_out = media_t
+                trk.duration = trk.trim_out - trk.trim_in
+                changed = True
 
         # ── Colour ─────────────────────────────────────────────────────
         imgui.spacing()

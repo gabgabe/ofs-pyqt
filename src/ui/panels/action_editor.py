@@ -34,6 +34,8 @@ class ActionEditorWindow:
         script:  Optional[Funscript],
         scripting,          # ScriptingMode (avoids circular import)
         undo:    UndoSystem,
+        timeline_mgr=None,  # TimelineManager | None
+        active_idx: int = -1,  # project.active_idx for track lookup
     ) -> None:
         """Render the action-editor button grid. Mirrors ``OFS_ActionEditor::ShowActionEditor``."""
         if not player.VideoLoaded():
@@ -69,7 +71,13 @@ class ActionEditorWindow:
         cur_pos: Optional[int] = None
         if script:
             ft = scripting.LogicalFrameTime()
-            closest = script.GetActionAtTime(player.CurrentTime(), ft * 0.5)
+            # Use funscript-local time for current-action lookup
+            if timeline_mgr is not None and active_idx >= 0:
+                trk = timeline_mgr.TrackForFunscript(active_idx)
+                _local_t = trk.GlobalToLocal(timeline_mgr.transport.position) if trk else timeline_mgr.transport.position
+            else:
+                _local_t = player.CurrentTime()
+            closest = script.GetActionAtTime(_local_t, ft * 0.5)
             if closest:
                 cur_pos = closest.pos
 
@@ -87,9 +95,15 @@ class ActionEditorWindow:
 
             if imgui.button(str(pos), btn_size):
                 if script:
-                    action = FunscriptAction(
-                        int(player.CurrentTime() * 1000), pos
-                    )
+                    # Compute action time in funscript-local coordinates
+                    if timeline_mgr is not None and active_idx >= 0:
+                        global_t = timeline_mgr.transport.position
+                        trk = timeline_mgr.TrackForFunscript(active_idx)
+                        local_t = trk.GlobalToLocal(global_t) if trk else global_t
+                        at_ms = int(local_t * 1000)
+                    else:
+                        at_ms = int(player.CurrentTime() * 1000)
+                    action = FunscriptAction(at_ms, pos)
                     undo.Snapshot(StateType.ADD_EDIT_ACTIONS, script)
                     scripting.AddEditAction(action)
 
@@ -105,7 +119,13 @@ class ActionEditorWindow:
         # Quick-edit display of the nearest action
         if script:
             ft = scripting.LogicalFrameTime()
-            closest = script.GetActionAtTime(player.CurrentTime(), ft)
+            # Use funscript-local time for nearest-action lookup
+            if timeline_mgr is not None and active_idx >= 0:
+                trk = timeline_mgr.TrackForFunscript(active_idx)
+                local_t = trk.GlobalToLocal(timeline_mgr.transport.position) if trk else timeline_mgr.transport.position
+            else:
+                local_t = player.CurrentTime()
+            closest = script.GetActionAtTime(local_t, ft)
             if closest:
                 imgui.text(
                     f"Nearest action: {closest.at} ms  →  {closest.pos}"

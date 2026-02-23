@@ -76,6 +76,11 @@ class OFS_VideoplayerControls:
         # through the TimelineManager instead of calling the player directly.
         self._timeline_mgr = None  # TimelineManager | None
 
+        # Selected track id — mirrors track_info selection.
+        # When set, the progress bar shows the track's range; otherwise the
+        # full timeline range (or video duration if no timeline manager).
+        self._selected_track_id: Optional[str] = None
+
     # ──────────────────────────────────────────────────────────────────────
 
     def Init(self, player: OFS_Videoplayer) -> None:
@@ -84,6 +89,33 @@ class OFS_VideoplayerControls:
     def SetTimelineManager(self, mgr) -> None:
         """Wire the transport controller for DAW-mode routing."""
         self._timeline_mgr = mgr
+
+    def SetSelectedTrackId(self, track_id: Optional[str]) -> None:
+        """Set the selected track for progress-bar range mapping."""
+        self._selected_track_id = track_id
+
+    def _effective_range(self) -> tuple:
+        """Return (start, end, current) for the progress bar.
+
+        * If a track is selected → (track.offset, track.end, transport_pos)
+        * Else if timeline_mgr → (0, timeline.duration, transport_pos)
+        * Fallback → (0, player.Duration(), player.CurrentTime())
+        """
+        mgr = self._timeline_mgr
+        if mgr is not None:
+            pos = mgr.transport.position
+            tl = mgr.timeline
+            # Try selected track first
+            if self._selected_track_id:
+                result = tl.FindTrack(self._selected_track_id)
+                if result:
+                    _lay, trk = result
+                    return (trk.offset, trk.end, pos)
+            # No track selected → full timeline range
+            tl_dur = tl.duration
+            if tl_dur > 0:
+                return (0.0, tl_dur, pos)
+        return None  # caller will fallback to player
 
     # ──────────────────────────────────────────────────────────────────────
     # Heatmap update (called by app when gradient flag set)
@@ -285,8 +317,15 @@ class OFS_VideoplayerControls:
             imgui.text_disabled("No video")
             return
 
-        duration = player.Duration()
-        current  = player.CurrentTime()
+        # Determine effective range for the progress bar
+        eff = self._effective_range()
+        if eff is not None:
+            bar_start, bar_end, current = eff
+        else:
+            bar_start = 0.0
+            bar_end   = player.Duration()
+            current   = player.CurrentTime()
+        duration = bar_end - bar_start
         if duration <= 0.0:
             return
 
@@ -298,7 +337,7 @@ class OFS_VideoplayerControls:
         BAR_H   = 22.0          # main timeline bar height
         CHAP_H  = BAR_H * 0.28  # chapter strip height (top of bar)
         BM_R    = 4.0           # bookmark circle radius
-        pct     = current / duration if duration > 0 else 0.0
+        pct     = max(0.0, min(1.0, (current - bar_start) / duration)) if duration > 0 else 0.0
         ox, oy  = origin.x, origin.y
 
         # 1 ── Background (grey unfilled portion) ──────────────────────
@@ -330,8 +369,8 @@ class OFS_VideoplayerControls:
         # 4 ── Chapters (top strip) ────────────────────────────────────
         if chapter_mgr and chapter_mgr._chapters:
             for ch in chapter_mgr._chapters:
-                ch_x0 = ox + (ch.start / duration) * W
-                ch_x1 = ox + (ch.end   / duration) * W
+                ch_x0 = ox + ((ch.start - bar_start) / duration) * W
+                ch_x1 = ox + ((ch.end   - bar_start) / duration) * W
                 if ch_x1 - ch_x0 < 1.0:
                     continue
                 cr, cg, cb = ch.color[0], ch.color[1], ch.color[2]
@@ -362,7 +401,7 @@ class OFS_VideoplayerControls:
         # 5 ── Bookmarks (small circles at bottom) ─────────────────────
         if chapter_mgr and chapter_mgr._bookmarks:
             for bm in chapter_mgr._bookmarks:
-                bm_x = ox + (bm.time / duration) * W
+                bm_x = ox + ((bm.time - bar_start) / duration) * W
                 dl.add_circle_filled(
                     ImVec2(bm_x, oy + BAR_H - BM_R - 1), BM_R,
                     0xFFFFFFFF, 8,
@@ -395,7 +434,7 @@ class OFS_VideoplayerControls:
         if imgui.is_item_active() and imgui.is_mouse_down(0):
             mx    = imgui.get_mouse_pos().x
             rel   = max(0.0, min(1.0, (mx - ox) / W))
-            seek_t = rel * duration
+            seek_t = bar_start + rel * duration
             if self._timeline_mgr:
                 self._timeline_mgr.Seek(seek_t)
             else:
@@ -414,7 +453,7 @@ class OFS_VideoplayerControls:
         if imgui.is_item_hovered():
             mouse = imgui.get_mouse_pos()
             rel   = (mouse.x - ox) / W
-            hover_t = max(0.0, min(duration, rel * duration))
+            hover_t = max(bar_start, min(bar_end, bar_start + rel * duration))
 
             # Request thumbnail for the hover position
             if thumbnail_mgr is not None:
@@ -431,7 +470,7 @@ class OFS_VideoplayerControls:
             delta  = hover_t - current
             sign   = "+" if delta >= 0 else ""
             time_str = (
-                f"{self._format_time(hover_t, duration)}"
+                f"{self._format_time(hover_t, bar_end)}"
                 f"  ({sign}{self._format_delta(abs(delta))})"
             )
             if thumbnail_mgr is not None and thumbnail_mgr.ready:
@@ -451,7 +490,7 @@ class OFS_VideoplayerControls:
         if chapter_mgr and chapter_mgr._chapters:
             if imgui.is_item_hovered() and imgui.is_mouse_clicked(1):
                 mouse    = imgui.get_mouse_pos()
-                click_t  = ((mouse.x - ox) / W) * duration
+                click_t  = bar_start + ((mouse.x - ox) / W) * duration
                 for i, ch in enumerate(chapter_mgr._chapters):
                     if ch.start <= click_t <= ch.end:
                         imgui.open_popup(f"##ch_ctx_tl_{i}")
@@ -468,7 +507,7 @@ class OFS_VideoplayerControls:
 
         # 10 ── Time label below bar ───────────────────────────────────
         imgui.dummy(ImVec2(1, 2))
-        imgui.text_disabled(self._format_time(current, duration))
+        imgui.text_disabled(self._format_time(current, bar_end))
 
     # ──────────────────────────────────────────────────────────────────────
     # Heatmap bitmap export

@@ -138,6 +138,8 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         self._axis_wiz_copy_idx: int = 0       # index into layer list
         self._axis_wiz_offset: float   = 0.0
         self._axis_wiz_duration: float = 60.0
+        self._axis_wiz_color_idx: int  = 0     # selected palette index
+        self._axis_wiz_color: tuple    = (0.55, 0.27, 0.68, 1.0)
 
         # Loaded file from CLI (set in Init)
         self._cli_file: Optional[str] = None
@@ -278,7 +280,9 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
                 dock_space_name_="ActionDock",
                 gui_function_=lambda: app.action_editor.Show(
                     app.player, app.project.active_script,
-                    app.scripting, app.undo_system
+                    app.scripting, app.undo_system,
+                    timeline_mgr=app.timeline_mgr,
+                    active_idx=app.project.active_idx,
                 ),
                 is_visible_=app.show_action_editor,
             ),
@@ -594,6 +598,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
     def _on_track_selected(self, track_id: str, **kw) -> None:
         """A track was clicked in the DAW — select it in the Track Info panel."""
         self.track_info.SelectTrack(track_id)
+        self.player_controls.SetSelectedTrackId(track_id)
 
     def _on_add_axis_request(self, axis: str, **kw) -> None:
         """DAW context menu requested adding a new axis track."""
@@ -885,6 +890,10 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         self._axis_wiz_path = new_path
         self._axis_wiz_mode = 0
         self._axis_wiz_copy_idx = 0
+        # Pick next palette colour based on how many funscript tracks exist
+        n_fs = len(self.timeline_mgr.timeline.FunscriptTracks())
+        self._axis_wiz_color_idx = n_fs % len(self._WIZ_PALETTE)
+        self._axis_wiz_color = self._WIZ_PALETTE[self._axis_wiz_color_idx]
         # Pre-fill defaults from video track if available
         vtracks = self.timeline_mgr.timeline.VideoTracks()
         if vtracks:
@@ -916,6 +925,9 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
                 self._axis_wiz_path = result
                 self._axis_wiz_mode = 0
                 self._axis_wiz_copy_idx = 0
+                n_fs = len(self.timeline_mgr.timeline.FunscriptTracks())
+                self._axis_wiz_color_idx = n_fs % len(self._WIZ_PALETTE)
+                self._axis_wiz_color = self._WIZ_PALETTE[self._axis_wiz_color_idx]
                 vtracks = self.timeline_mgr.timeline.VideoTracks()
                 if vtracks:
                     vt = vtracks[0][1]
@@ -997,6 +1009,22 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
 
     # ── Add Track wizard ──────────────────────────────────────────────
 
+    # Colour palette for the Add Track wizard
+    _WIZ_PALETTE = [
+        (0.55, 0.27, 0.68, 1.0),  # purple
+        (0.27, 0.55, 0.68, 1.0),  # teal
+        (0.68, 0.55, 0.27, 1.0),  # amber
+        (0.27, 0.68, 0.40, 1.0),  # green
+        (0.68, 0.27, 0.40, 1.0),  # rose
+        (0.40, 0.68, 0.27, 1.0),  # lime
+        (0.85, 0.35, 0.20, 1.0),  # orange
+        (0.20, 0.40, 0.85, 1.0),  # blue
+        (0.85, 0.20, 0.55, 1.0),  # magenta
+        (0.20, 0.75, 0.75, 1.0),  # cyan
+        (0.90, 0.75, 0.15, 1.0),  # gold
+        (0.50, 0.50, 0.50, 1.0),  # grey
+    ]
+
     def _draw_axis_wizard(self) -> None:
         """Modal popup for adding a new funscript track with timing options."""
         if not self._axis_wiz_open:
@@ -1009,7 +1037,47 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         if not opened:
             return
 
-        imgui.text(f"New Track:  {self._axis_wiz_name}")
+        # ── Editable track name ───────────────────────────────────────
+        imgui.text("Name")
+        imgui.same_line(100)
+        imgui.set_next_item_width(250)
+        ch, nv = imgui.input_text("##wiz_name", self._axis_wiz_name, 64)
+        if ch:
+            self._axis_wiz_name = nv
+
+        imgui.separator()
+        imgui.spacing()
+
+        # ── Colour palette ────────────────────────────────────────────
+        imgui.text("Colour")
+        imgui.same_line(100)
+        pal = self._WIZ_PALETTE
+        for i, c in enumerate(pal):
+            if i > 0:
+                imgui.same_line()
+            selected = (i == self._axis_wiz_color_idx)
+            # Draw a coloured selectable square
+            r, g, b, a = c
+            if selected:
+                imgui.push_style_color(imgui.Col_.button, ImVec4(r, g, b, a))
+                imgui.push_style_color(imgui.Col_.button_hovered, ImVec4(r, g, b, a))
+                imgui.push_style_color(imgui.Col_.button_active, ImVec4(r, g, b, a))
+                imgui.push_style_color(imgui.Col_.border, ImVec4(1.0, 1.0, 1.0, 1.0))
+                imgui.push_style_var(imgui.StyleVar_.frame_border_size, 2.0)
+            else:
+                imgui.push_style_color(imgui.Col_.button, ImVec4(r, g, b, a))
+                imgui.push_style_color(imgui.Col_.button_hovered, ImVec4(min(1,r+0.15), min(1,g+0.15), min(1,b+0.15), a))
+                imgui.push_style_color(imgui.Col_.button_active, ImVec4(r, g, b, a))
+            if imgui.button(f"##pal{i}", ImVec2(22, 22)):
+                self._axis_wiz_color_idx = i
+                self._axis_wiz_color = c
+            if selected:
+                imgui.pop_style_var()
+                imgui.pop_style_color(4)
+            else:
+                imgui.pop_style_color(3)
+
+        imgui.spacing()
         imgui.separator()
         imgui.spacing()
 
@@ -1028,11 +1096,10 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
 
         if self._axis_wiz_mode == 0:
             # ── Copy from track ───────────────────────────────────────
-            # Build labels for combo
             labels = []
             for _lay, trk in all_tracks:
                 t_label = "VIDEO" if trk.track_type == 0 else trk.name
-                labels.append(f"{t_label}  ({trk.offset:.1f}s – {trk.end:.1f}s)")
+                labels.append(f"{t_label}  ({trk.offset:.1f}s \u2013 {trk.end:.1f}s)")
 
             if labels:
                 imgui.text("Source track")
@@ -1044,7 +1111,6 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
                 if self._axis_wiz_copy_idx >= len(all_tracks):
                     self._axis_wiz_copy_idx = len(all_tracks) - 1
 
-                # Show preview of what will be copied
                 if 0 <= self._axis_wiz_copy_idx < len(all_tracks):
                     _, src = all_tracks[self._axis_wiz_copy_idx]
                     imgui.spacing()
@@ -1123,8 +1189,11 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         self.status |= OFS_Status.GRADIENT_NEEDS_UPDATE
 
         # Add corresponding track in the DAW timeline with chosen timing
+        trk_name = self._axis_wiz_name or None
+        trk_color = self._axis_wiz_color if self._axis_wiz_color else None
         self.timeline_mgr.AddFunscriptTrack(
-            new_idx, offset=offset, duration=duration)
+            new_idx, offset=offset, duration=duration,
+            color=trk_color, name=trk_name)
 
     def _confirm_remove_funscript(self, idx: int) -> None:
         """Store pending remove index; actual removal happens in _draw_remove_confirm."""

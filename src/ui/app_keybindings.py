@@ -206,10 +206,10 @@ class KeybindingsMixin:
             lambda: self._active().ClearSelection() if self._active() else None,
             "Deselect all", "Utility", [(K.mod_ctrl, K.d)])
         reg("select_all_left",
-            lambda: self._active().SelectTime(0, self.player.CurrentTime()) if self._active() else None,
+            lambda: self._active().SelectTime(0, self._funscript_time()) if self._active() else None,
             "Select all left",  "Utility", [(K.mod_ctrl | K.mod_alt, K.left_arrow)])
         reg("select_all_right",
-            lambda: self._active().SelectTime(self.player.CurrentTime(), self.player.Duration()) if self._active() else None,
+            lambda: self._active().SelectTime(self._funscript_time(), self.player.Duration()) if self._active() else None,
             "Select all right", "Utility", [(K.mod_ctrl | K.mod_alt, K.right_arrow)])
 
         reg("select_top_points",    self._select_top_points,    "Select top points",    "Utility")
@@ -237,7 +237,7 @@ class KeybindingsMixin:
                 self.undo_system.Snapshot(StateType.ACTIONS_MOVED, s)
                 s.MoveSelectionPosition(delta)
             else:
-                c = s.GetClosestAction(self.player.CurrentTime())
+                c = s.GetClosestAction(self._funscript_time())
                 if c:
                     moved = FunscriptAction(c.at, max(0, min(100, c.pos + delta)))
                     self.undo_system.Snapshot(StateType.ACTIONS_MOVED, s)
@@ -255,12 +255,12 @@ class KeybindingsMixin:
                 self.undo_system.Snapshot(StateType.ACTIONS_MOVED, s)
                 s.MoveSelectionTime(t, self.scripting.LogicalFrameTime())
                 if snap_video:
-                    c = s.GetClosestActionSelection(self.player.CurrentTime())
+                    c = s.GetClosestActionSelection(self._funscript_time())
                     self.timeline_mgr.Seek(
                         (c.at / 1000.0) if c else (sel[0].at / 1000.0)
                     )
             else:
-                c = s.GetClosestAction(self.player.CurrentTime())
+                c = s.GetClosestAction(self._funscript_time())
                 if c:
                     t = (self.scripting.SteppingIntervalForward(c.at / 1000.0)
                          if forward else

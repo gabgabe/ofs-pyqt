@@ -38,15 +38,29 @@ class EditingCommandsMixin:
     def _active(self: "OpenFunscripter") -> Optional[Funscript]:
         return self.project.active_script
 
+    def _funscript_time(self: "OpenFunscripter") -> float:
+        """Current time in funscript-local coordinates (seconds).
+
+        Uses the transport position converted via the active track's offset
+        when a timeline manager is present; falls back to player time.
+        """
+        mgr = getattr(self, 'timeline_mgr', None)
+        if mgr is not None:
+            global_t = mgr.transport.position
+            trk = mgr.TrackForFunscript(self.project.active_idx)
+            if trk is not None:
+                return trk.GlobalToLocal(global_t)
+            return global_t
+        return self.player.CurrentTime()
+
     def AddEditAction(self: "OpenFunscripter", pos: int) -> None:
         """Insert or edit an action at the current time. Mirrors ``OpenFunscripter::AddEditAction``."""
         s = self._active()
         if not s:
             return
+        at_ms = int(self._funscript_time() * 1000)
         self.undo_system.Snapshot(StateType.ADD_EDIT_ACTIONS, s)
-        self.scripting.AddEditAction(FunscriptAction(
-            int(self.player.CurrentTime() * 1000), pos
-        ))
+        self.scripting.AddEditAction(FunscriptAction(at_ms, pos))
 
     def RemoveAction(self: "OpenFunscripter") -> None:
         """Remove the selected or closest action. Mirrors ``OpenFunscripter::RemoveAction``."""
@@ -57,7 +71,7 @@ class EditingCommandsMixin:
             self.undo_system.Snapshot(StateType.REMOVE_SELECTION, s)
             s.RemoveSelectedActions()
         else:
-            closest = s.GetClosestAction(self.player.CurrentTime())
+            closest = s.GetClosestAction(self._funscript_time())
             if closest:
                 self.undo_system.Snapshot(StateType.REMOVE_ACTION, s)
                 s.RemoveAction(closest)
@@ -82,12 +96,13 @@ class EditingCommandsMixin:
         if not s or not self.copied_selection:
             return
         self.undo_system.Snapshot(StateType.PASTE_COPIED_ACTIONS, s)
-        t0 = self.player.CurrentTime() * 1000
+        cur_t = self._funscript_time()
+        t0 = cur_t * 1000
         offset = t0 - self.copied_selection[0].at
         dur = (self.copied_selection[-1].at - self.copied_selection[0].at) / 1000.0
         s.RemoveActionsInInterval(
-            self.player.CurrentTime() - 0.0005,
-            self.player.CurrentTime() + dur + 0.0005
+            cur_t - 0.0005,
+            cur_t + dur + 0.0005
         )
         for a in self.copied_selection:
             s.AddAction(FunscriptAction(a.at + int(offset), a.pos))
@@ -114,7 +129,7 @@ class EditingCommandsMixin:
         if not s:
             return
         if not s.HasSelection():
-            closest = s.GetClosestAction(self.player.CurrentTime())
+            closest = s.GetClosestAction(self._funscript_time())
             if closest:
                 behind = s.GetPreviousActionBehind(closest.at / 1000.0)
                 ahead  = s.GetNextActionAhead(closest.at / 1000.0)
@@ -133,7 +148,7 @@ class EditingCommandsMixin:
         if not s:
             return
         if not s.HasSelection():
-            closest = s.GetClosestAction(self.player.CurrentTime())
+            closest = s.GetClosestAction(self._funscript_time())
             if closest:
                 self.undo_system.Snapshot(StateType.INVERT_ACTIONS, s)
                 s.SelectAction(closest); s.InvertSelection(); s.ClearSelection()
@@ -146,7 +161,7 @@ class EditingCommandsMixin:
         s = self._active()
         if not s:
             return
-        closest = s.GetClosestAction(self.player.CurrentTime())
+        closest = s.GetClosestAction(self._funscript_time())
         if not closest:
             return
         self.undo_system.Snapshot(StateType.ISOLATE_ACTION, s)
@@ -162,12 +177,13 @@ class EditingCommandsMixin:
         s = self._active()
         if not s:
             return
-        stroke = s.GetLastStroke(self.player.CurrentTime())
+        cur_t = self._funscript_time()
+        stroke = s.GetLastStroke(cur_t)
         if len(stroke) < 2:
             return
-        offset = self.player.CurrentTime() * 1000 - stroke[-1].at
+        offset = cur_t * 1000 - stroke[-1].at
         self.undo_system.Snapshot(StateType.REPEAT_STROKE, s)
-        on_action = s.GetActionAtTime(self.player.CurrentTime(),
+        on_action = s.GetActionAtTime(cur_t,
                                          self.scripting.LogicalFrameTime())
         start = len(stroke) - 2 if on_action else len(stroke) - 1
         for i in range(start, -1, -1):
@@ -247,8 +263,9 @@ class EditingCommandsMixin:
         s = self._active()
         if not s:
             return
-        c = s.GetClosestAction(self.player.CurrentTime())
+        cur_t = self._funscript_time()
+        c = s.GetClosestAction(cur_t)
         if c:
             self.undo_system.Snapshot(StateType.MOVE_ACTION_TO_CURRENT_POS, s)
             s.EditAction(c, FunscriptAction(
-                int(self.player.CurrentTime() * 1000), c.pos))
+                int(cur_t * 1000), c.pos))

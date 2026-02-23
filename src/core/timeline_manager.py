@@ -326,7 +326,8 @@ class TimelineManager:
 
     def AddFunscriptTrack(
         self, script_idx: int, *, offset: float = 0.0,
-        duration: float = 0.0, layer_idx: int = -1
+        duration: float = 0.0, layer_idx: int = -1,
+        color: Optional[tuple] = None, name: Optional[str] = None,
     ) -> Optional[Track]:
         """Add a funscript track.  If *layer_idx* < 0, creates a new layer."""
         if not self._project:
@@ -335,14 +336,14 @@ class TimelineManager:
         if not (0 <= script_idx < len(scripts)):
             return None
         fs = scripts[script_idx]
-        name = fs.title or f"Script {script_idx}"
-        col  = _FUNSCRIPT_COLORS[script_idx % len(_FUNSCRIPT_COLORS)]
+        trk_name = name or fs.title or f"Script {script_idx}"
+        col = color if color else _FUNSCRIPT_COLORS[script_idx % len(_FUNSCRIPT_COLORS)]
 
         if duration <= 0:
             duration = self._funscript_duration(fs)
 
         track = Track(
-            name=name,
+            name=trk_name,
             track_type=TrackType.FUNSCRIPT,
             offset=offset,
             duration=duration,
@@ -351,7 +352,7 @@ class TimelineManager:
         )
 
         if layer_idx < 0 or layer_idx >= len(self.timeline.layers):
-            layer = self.timeline.AddLayer(name)
+            layer = self.timeline.AddLayer(trk_name)
         else:
             layer = self.timeline.layers[layer_idx]
 

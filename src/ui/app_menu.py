@@ -150,9 +150,9 @@ class MenuBarMixin:
                 if s: s.ClearSelection()
             imgui.separator()
             if imgui.menu_item("Select all left",  "Ctrl+Alt+Left", False)[0]:
-                if s: s.SelectTime(0, self.player.CurrentTime())
+                if s: s.SelectTime(0, self._funscript_time())
             if imgui.menu_item("Select all right", "Ctrl+Alt+Right", False)[0]:
-                if s: s.SelectTime(self.player.CurrentTime(), self.player.Duration())
+                if s: s.SelectTime(self._funscript_time(), self.player.Duration())
             imgui.separator()
             if imgui.menu_item("Top points only",    "", False, has_sel)[0]: self._select_top_points()
             if imgui.menu_item("Middle points only", "", False, has_sel)[0]: self._select_middle_points()
