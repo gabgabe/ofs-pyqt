@@ -93,16 +93,25 @@ class KeybindingsMixin:
         def _prev_action():
             s = self._active()
             if s:
-                a = s.GetPreviousActionBehind(self.player.CurrentTime() - 0.001)
+                # Use transport time, converted to track-local for action lookup
+                trk = self.timeline_mgr.TrackForFunscript(self.project.active_idx)
+                cur = self.timeline_mgr.CurrentTime()
+                local_t = (trk.GlobalToLocal(cur) if trk else cur)
+                a = s.GetPreviousActionBehind(local_t - 0.001)
                 if a:
-                    self.player.SetPositionExact(a.at / 1000.0)
+                    seek_t = (trk.LocalToGlobal(a.at / 1000.0) if trk else a.at / 1000.0)
+                    self.timeline_mgr.Seek(seek_t)
 
         def _next_action():
             s = self._active()
             if s:
-                a = s.GetNextActionAhead(self.player.CurrentTime() + 0.001)
+                trk = self.timeline_mgr.TrackForFunscript(self.project.active_idx)
+                cur = self.timeline_mgr.CurrentTime()
+                local_t = (trk.GlobalToLocal(cur) if trk else cur)
+                a = s.GetNextActionAhead(local_t + 0.001)
                 if a:
-                    self.player.SetPositionExact(a.at / 1000.0)
+                    seek_t = (trk.LocalToGlobal(a.at / 1000.0) if trk else a.at / 1000.0)
+                    self.timeline_mgr.Seek(seek_t)
 
         reg("prev_action", _prev_action, "Previous action", "Navigation",
             [(0, K.down_arrow, True)], repeat=True)
@@ -115,16 +124,18 @@ class KeybindingsMixin:
             scripts = self.project.funscripts
             if not scripts:
                 return
-            current_time = self.player.CurrentTime()
+            current_time = self.timeline_mgr.CurrentTime()
             best_time: float = -1.0
-            for s in scripts:
-                a = s.GetPreviousActionBehind(current_time - 0.001)
+            for idx, s in enumerate(scripts):
+                trk = self.timeline_mgr.TrackForFunscript(idx)
+                local_t = (trk.GlobalToLocal(current_time) if trk else current_time)
+                a = s.GetPreviousActionBehind(local_t - 0.001)
                 if a is not None:
-                    t = a.at / 1000.0
-                    if best_time < 0.0 or abs(current_time - t) < abs(current_time - best_time):
-                        best_time = t
+                    g = (trk.LocalToGlobal(a.at / 1000.0) if trk else a.at / 1000.0)
+                    if best_time < 0.0 or abs(current_time - g) < abs(current_time - best_time):
+                        best_time = g
             if best_time >= 0.0:
-                self.player.SetPositionExact(best_time)
+                self.timeline_mgr.Seek(best_time)
 
         def _next_action_multi():
             """Mirrors OFS next_action_multi: navigate to nearest action AHEAD
@@ -132,16 +143,18 @@ class KeybindingsMixin:
             scripts = self.project.funscripts
             if not scripts:
                 return
-            current_time = self.player.CurrentTime()
+            current_time = self.timeline_mgr.CurrentTime()
             best_time: float = -1.0
-            for s in scripts:
-                a = s.GetNextActionAhead(current_time + 0.001)
+            for idx, s in enumerate(scripts):
+                trk = self.timeline_mgr.TrackForFunscript(idx)
+                local_t = (trk.GlobalToLocal(current_time) if trk else current_time)
+                a = s.GetNextActionAhead(local_t + 0.001)
                 if a is not None:
-                    t = a.at / 1000.0
-                    if best_time < 0.0 or abs(current_time - t) < abs(current_time - best_time):
-                        best_time = t
+                    g = (trk.LocalToGlobal(a.at / 1000.0) if trk else a.at / 1000.0)
+                    if best_time < 0.0 or abs(current_time - g) < abs(current_time - best_time):
+                        best_time = g
             if best_time >= 0.0:
-                self.player.SetPositionExact(best_time)
+                self.timeline_mgr.Seek(best_time)
 
         reg("prev_action_multi", _prev_action_multi,
             "Previous action (all scripts)", "Navigation",
@@ -243,7 +256,7 @@ class KeybindingsMixin:
                 s.MoveSelectionTime(t, self.scripting.LogicalFrameTime())
                 if snap_video:
                     c = s.GetClosestActionSelection(self.player.CurrentTime())
-                    self.player.SetPositionExact(
+                    self.timeline_mgr.Seek(
                         (c.at / 1000.0) if c else (sel[0].at / 1000.0)
                     )
             else:
@@ -261,7 +274,7 @@ class KeybindingsMixin:
                         self.undo_system.Snapshot(StateType.ACTIONS_MOVED, s)
                         s.EditAction(c, moved)
                         if snap_video:
-                            self.player.SetPositionExact(moved.at / 1000.0)
+                            self.timeline_mgr.Seek(moved.at / 1000.0)
 
         reg("move_actions_up_ten",   lambda: _move_pos(10),  "Move up 10",   "Moving")
         reg("move_actions_down_ten", lambda: _move_pos(-10), "Move down 10", "Moving")
@@ -290,11 +303,11 @@ class KeybindingsMixin:
 
         # ── Videoplayer ───────────────────────────────────────────────────
         reg_grp("Videoplayer", "Videoplayer")
-        reg("toggle_play",      lambda: self.player.TogglePlay(),    "Toggle play",     "Videoplayer", [(0, K.space)])
-        reg("decrement_speed",  lambda: self.player.AddSpeed(-0.1),  "Decrease speed",  "Videoplayer", [(0, K.keypad_subtract)])
-        reg("increment_speed",  lambda: self.player.AddSpeed( 0.1),  "Increase speed",  "Videoplayer", [(0, K.keypad_add)])
-        reg("goto_start",  lambda: self.player.SetPositionPercent(0.0), "Go to start", "Videoplayer")
-        reg("goto_end",    lambda: self.player.SetPositionPercent(1.0), "Go to end",   "Videoplayer")
+        reg("toggle_play",      lambda: self.timeline_mgr.TogglePlay(),  "Toggle play",     "Videoplayer", [(0, K.space)])
+        reg("decrement_speed",  lambda: self.timeline_mgr.AddSpeed(-0.1), "Decrease speed",  "Videoplayer", [(0, K.keypad_subtract)])
+        reg("increment_speed",  lambda: self.timeline_mgr.AddSpeed( 0.1), "Increase speed",  "Videoplayer", [(0, K.keypad_add)])
+        reg("goto_start",  lambda: self.timeline_mgr.Seek(0.0),                      "Go to start", "Videoplayer")
+        reg("goto_end",    lambda: self.timeline_mgr.Seek(self.timeline_mgr.Duration()), "Go to end",   "Videoplayer")
 
         # Scroll wheel pseudo-key bindings (no default action; bindable by user)
         reg("scroll_up",   lambda: None, "Scroll wheel up",   "Videoplayer")

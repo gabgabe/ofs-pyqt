@@ -337,7 +337,12 @@ class OFS_Project:
         return self._valid
 
     def ImportFromMedia(self, path: str) -> bool:
-        """Create a project from a media file; create an empty funscript. Mirrors ``OFS_Project::ImportFromMedia``."""
+        """Create a project from a media file.
+
+        Only loads *existing* funscripts that live alongside the media.
+        Does **not** auto-create an empty funscript — the user adds scripts
+        manually via the DAW timeline (right-click → Add axis).
+        """
         if self._valid:
             log.warning("Project already loaded.")
             return False
@@ -354,10 +359,11 @@ class OFS_Project:
         self._path = str(base.with_suffix(PROJECT_EXTENSION))
         self.state.relative_media_path = self._make_path_relative(path)
 
-        # Derive funscript path from media stem
+        # Load only existing funscripts (do NOT create empty ones)
         funscript_path = str(base.with_suffix(".funscript"))
         self.funscripts.clear()
-        self._load_funscript(funscript_path)  # will create empty if not found
+        if os.path.isfile(funscript_path):
+            self._load_funscript(funscript_path)
 
         # Load any existing multi-axis scripts
         for rel_path in _find_related_scripts(funscript_path):

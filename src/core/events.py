@@ -58,6 +58,18 @@ class OFS_Events:
     CHAPTER_STATE_CHANGED = "ChapterStateChanged"
     EXPORT_CLIP           = "ExportClipForChapter"
 
+    # DAW Timeline
+    TIMELINE_BUILT        = "TimelineBuilt"
+    TIMELINE_PLAY_PAUSE   = "TimelinePlayPause"
+    TIMELINE_SEEK         = "TimelineSeek"
+    TIMELINE_TRACK_MOVED  = "TimelineTrackMoved"
+    TIMELINE_TRACK_ADDED  = "TimelineTrackAdded"
+    TIMELINE_TRACK_REMOVED = "TimelineTrackRemoved"
+    TIMELINE_LAYER_MUTE   = "TimelineLayerMute"
+    TIMELINE_LAYOUT_CHANGED = "TimelineLayoutChanged"
+    TIMELINE_TRACK_SELECTED = "TimelineTrackSelected"
+    TIMELINE_ADD_AXIS_REQUEST = "TimelineAddAxisRequest"   # axis=str
+
     # Drag-and-drop
     DROP_FILE             = "DropFile"
 

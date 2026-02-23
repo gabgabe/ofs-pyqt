@@ -72,10 +72,18 @@ class OFS_VideoplayerControls:
         self._chapter_tooltip: str = ""
         self._drag_was_paused: bool = True   # for seek-pause-resume
 
+        # Optional transport controller — when set, play/pause/seek/speed go
+        # through the TimelineManager instead of calling the player directly.
+        self._timeline_mgr = None  # TimelineManager | None
+
     # ──────────────────────────────────────────────────────────────────────
 
     def Init(self, player: OFS_Videoplayer) -> None:
         pass  # GL texture upload deferred to first use
+
+    def SetTimelineManager(self, mgr) -> None:
+        """Wire the transport controller for DAW-mode routing."""
+        self._timeline_mgr = mgr
 
     # ──────────────────────────────────────────────────────────────────────
     # Heatmap update (called by app when gradient flag set)
@@ -141,26 +149,32 @@ class OFS_VideoplayerControls:
             imgui.text_disabled("No video")
             return
 
+        mgr = self._timeline_mgr  # may be None
+
         # ── Row 1: playback buttons ────────────────────────────────────
         button_h = imgui.get_frame_height()
         small    = ImVec2(button_h, button_h)
 
-        # prev-frame
+        # prev-frame (goes directly to player; SyncFromPlayer catches it)
         if imgui.button(fa.ICON_FA_BACKWARD_STEP, small):
             player.PreviousFrame()
         if imgui.is_item_hovered():
             imgui.set_tooltip("Previous frame  [←]")
         imgui.same_line()
 
-        # play/pause
-        play_icon = fa.ICON_FA_PAUSE if not player.IsPaused() else fa.ICON_FA_PLAY
+        # play/pause — route through transport when available
+        is_playing = (not mgr.IsPlaying()) if mgr else player.IsPaused()
+        play_icon = fa.ICON_FA_PAUSE if not is_playing else fa.ICON_FA_PLAY
         if imgui.button(play_icon, small):
-            player.TogglePlay()
+            if mgr:
+                mgr.TogglePlay()
+            else:
+                player.TogglePlay()
         if imgui.is_item_hovered():
             imgui.set_tooltip("Play / Pause  [Space]")
         imgui.same_line()
 
-        # next-frame
+        # next-frame (goes directly to player; SyncFromPlayer catches it)
         if imgui.button(fa.ICON_FA_FORWARD_STEP, small):
             player.NextFrame()
         if imgui.is_item_hovered():
@@ -170,18 +184,24 @@ class OFS_VideoplayerControls:
 
         # ── ±3 s seek buttons ──────────────────────────────────────────
         if imgui.button(fa.ICON_FA_BACKWARD + " 3s##sk_back", ImVec2(0, button_h)):
-            player.SeekRelative(-3.0)
+            if mgr:
+                mgr.SeekRelative(-3.0)
+            else:
+                player.SeekRelative(-3.0)
         if imgui.is_item_hovered():
             imgui.set_tooltip("Seek −3 seconds  [Shift+←]")
         imgui.same_line(spacing=2)
         if imgui.button("3s " + fa.ICON_FA_FORWARD + "##sk_fwd", ImVec2(0, button_h)):
-            player.SeekRelative(3.0)
+            if mgr:
+                mgr.SeekRelative(3.0)
+            else:
+                player.SeekRelative(3.0)
         if imgui.is_item_hovered():
             imgui.set_tooltip("Seek +3 seconds  [Shift+→]")
 
         imgui.same_line(spacing=8)
 
-        # mute
+        # mute (volume is player-only, not transport)
         mute_icon = fa.ICON_FA_VOLUME_XMARK if player.Volume() == 0 else fa.ICON_FA_VOLUME_HIGH
         if imgui.button(mute_icon, small):
             if player.Volume() == 0:
@@ -202,12 +222,16 @@ class OFS_VideoplayerControls:
 
         imgui.same_line(spacing=8)
 
-        # speed input
+        # speed input — route through transport when available
         imgui.set_next_item_width(max(50, min(70, avail * 0.15)))
-        speed = player.CurrentSpeed()
+        speed = mgr.transport.speed if mgr else player.CurrentSpeed()
         changed_s, new_speed = imgui.input_float("##spd", speed, 0.0, 0.0, "%.2f×")
         if changed_s:
-            player.SetSpeed(max(0.05, min(5.0, new_speed)))
+            new_speed = max(0.05, min(5.0, new_speed))
+            if mgr:
+                mgr.SetSpeed(new_speed)
+            else:
+                player.SetSpeed(new_speed)
         if imgui.is_item_hovered():
             imgui.set_tooltip("Playback speed  (scroll to change)")
 
@@ -216,17 +240,26 @@ class OFS_VideoplayerControls:
         # speed preset buttons: 1×  -10%  +10%
         spd_w = ImVec2(max(28, button_h * 1.6), button_h)
         if imgui.button("1" + fa.ICON_FA_XMARK + "##sp1", spd_w):
-            player.SetSpeed(1.0)
+            if mgr:
+                mgr.SetSpeed(1.0)
+            else:
+                player.SetSpeed(1.0)
         if imgui.is_item_hovered():
             imgui.set_tooltip("Reset speed to 1×")
         imgui.same_line(spacing=2)
         if imgui.button("-10%%##spm", spd_w):
-            player.SetSpeed(max(0.05, player.CurrentSpeed() * 0.9))
+            if mgr:
+                mgr.SetSpeed(max(0.05, mgr.transport.speed * 0.9))
+            else:
+                player.SetSpeed(max(0.05, player.CurrentSpeed() * 0.9))
         if imgui.is_item_hovered():
             imgui.set_tooltip("Decrease speed by 10%")
         imgui.same_line(spacing=2)
         if imgui.button("+10%%##spp", spd_w):
-            player.SetSpeed(min(5.0, player.CurrentSpeed() * 1.1))
+            if mgr:
+                mgr.SetSpeed(min(5.0, mgr.transport.speed * 1.1))
+            else:
+                player.SetSpeed(min(5.0, player.CurrentSpeed() * 1.1))
         if imgui.is_item_hovered():
             imgui.set_tooltip("Increase speed by 10%")
 
@@ -354,18 +387,28 @@ class OFS_VideoplayerControls:
         if imgui.is_item_activated():
             self._drag_was_paused = player.IsPaused()
             if not player.IsPaused():
-                player.SetPaused(True)
+                if self._timeline_mgr:
+                    self._timeline_mgr.transport.Pause()
+                else:
+                    player.SetPaused(True)
 
         if imgui.is_item_active() and imgui.is_mouse_down(0):
             mx    = imgui.get_mouse_pos().x
             rel   = max(0.0, min(1.0, (mx - ox) / W))
-            player.SetPositionExact(rel * duration)
-            if player.IsPaused():
-                player.Update(0.0)
+            seek_t = rel * duration
+            if self._timeline_mgr:
+                self._timeline_mgr.Seek(seek_t)
+            else:
+                player.SetPositionExact(seek_t)
+                if player.IsPaused():
+                    player.Update(0.0)
 
         if imgui.is_item_deactivated():
             if not self._drag_was_paused:
-                player.SetPaused(False)
+                if self._timeline_mgr:
+                    self._timeline_mgr.transport.Play()
+                else:
+                    player.SetPaused(False)
 
         # 8 ── Hover effects ───────────────────────────────────────────
         if imgui.is_item_hovered():

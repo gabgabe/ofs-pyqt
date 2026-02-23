@@ -7,6 +7,8 @@ __all__ = [
     "project",
     "tempo",
     "thumbnail",
+    "timeline",
+    "timeline_manager",
     "undo_system",
     "video_player",
     "waveform",

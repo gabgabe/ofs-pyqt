@@ -35,6 +35,7 @@ from src.core.keybindings  import OFS_KeybindingSystem
 from src.core.websocket_api import WebSocketAPI
 from src.core.waveform     import WaveformData
 from src.core.thumbnail    import VideoThumbnailManager
+from src.core.timeline_manager import TimelineManager
 
 from src.ui.videoplayer_window   import OFS_VideoplayerWindow
 from src.ui.videoplayer_controls import OFS_VideoplayerControls
@@ -48,6 +49,7 @@ from src.ui.panels.simulator         import SimulatorWindow
 from src.ui.panels.preferences       import PreferencesWindow
 from src.ui.panels.chapter_manager   import ChapterManagerWindow
 from src.ui.panels.metadata_editor   import MetadataEditorWindow
+from src.ui.panels.track_info         import TrackInfoWindow
 from src.ui.app_state    import OFS_Status, AUTO_BACKUP_INTERVAL, FUNSCRIPT_AXIS_NAMES
 from src.ui.app_editing  import EditingCommandsMixin
 from src.ui.app_keybindings import KeybindingsMixin
@@ -75,6 +77,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         self.web_api      = WebSocketAPI()
         self.waveform     = WaveformData()
         self.thumbnail_mgr = VideoThumbnailManager()
+        self.timeline_mgr = TimelineManager()
 
         # UI subsystems
         self.player_window   = OFS_VideoplayerWindow()
@@ -89,6 +92,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         self.preferences     = PreferencesWindow()
         self.chapter_mgr     = ChapterManagerWindow()
         self.metadata_editor = MetadataEditorWindow()
+        self.track_info      = TrackInfoWindow()
 
         # State
         self.status: int         = OFS_Status.NONE
@@ -112,6 +116,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         self.show_preferences    : bool = False
         self.show_about          : bool = False
         self.show_project_editor : bool = False
+        self.show_track_info     : bool = True
 
         # Timeline display flags
         self.always_show_bookmark_labels: bool = False
@@ -123,6 +128,16 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         self._pending_open_path:   Optional[str] = None   # path to open after confirm
         self._show_close_confirm:  bool           = False  # modal visible flag
         self._pending_remove_idx:  int            = -1     # track to remove (confirm modal)
+
+        # ── Add Track wizard state ──
+        self._axis_wiz_open: bool   = False
+        self._axis_wiz_name: str    = ""       # display name (axis or filename)
+        self._axis_wiz_axis: str    = ""       # axis suffix ("surge", etc.) — empty for file-based
+        self._axis_wiz_path: str    = ""       # full path (for file-based adds)
+        self._axis_wiz_mode: int    = 0        # 0 = copy from track, 1 = custom
+        self._axis_wiz_copy_idx: int = 0       # index into layer list
+        self._axis_wiz_offset: float   = 0.0
+        self._axis_wiz_duration: float = 60.0
 
         # Loaded file from CLI (set in Init)
         self._cli_file: Optional[str] = None
@@ -247,7 +262,8 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
                 dock_space_name_="TimelineDock",
                 gui_function_=lambda: app.script_timeline.Show(
                     app.player, app.project.funscripts,
-                    app.project.active_idx
+                    app.project.active_idx,
+                    timeline_mgr=app.timeline_mgr,
                 ),
                 is_visible_=True,
             ),
@@ -279,6 +295,12 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
                 dock_space_name_="UndoDock",
                 gui_function_=lambda: app.undo_history.Show(app.undo_system),
                 is_visible_=app.show_history,
+            ),
+            hello_imgui.DockableWindow(
+                label_="Track Info###TrackInfo",
+                dock_space_name_="StatsDock",
+                gui_function_=lambda: app.track_info.Show(app.timeline_mgr),
+                is_visible_=app.show_track_info,
             ),
         ]
 
@@ -326,6 +348,14 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         self.script_timeline.Init()
         self.script_timeline.waveform = self.waveform
 
+        # Init timeline manager (DAW-mode transport controller)
+        self.timeline_mgr.SetPlayer(self.player)
+        self.timeline_mgr.SetProject(self.project)
+
+        # Wire transport into player controls so play/pause/seek/speed
+        # go through the transport instead of calling the player directly.
+        self.player_controls.SetTimelineManager(self.timeline_mgr)
+
         # Faster key-repeat: default ImGui settings (delay=0.275s, rate=0.050s)
         # feel sluggish for frame-by-frame stepping and action moving.
         # Shorter delay + higher rate makes held-key scrolling smooth.
@@ -345,19 +375,20 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
 
         # Wire WebSocket API state getters and command callbacks
         self.web_api.SetStateGetters(
-            get_time=self.player.CurrentTime,
-            get_duration=self.player.Duration,
-            get_playing=lambda: not self.player.IsPaused(),
-            get_speed=self.player.CurrentSpeed,
+            get_time=self.timeline_mgr.CurrentTime,
+            get_duration=self.timeline_mgr.Duration,
+            get_playing=self.timeline_mgr.IsPlaying,
+            get_speed=lambda: self.timeline_mgr.transport.speed,
             get_media=self.player.VideoPath,
             get_funscripts=(
                 lambda: self.project.funscripts if self.project.is_valid else []
             ),
         )
         self.web_api.SetCallbacks(
-            on_change_time=lambda t: self.player.SetPositionExact(t),
-            on_change_play=lambda p: self.player.SetPaused(not p),
-            on_change_playbackspeed=self.player.SetSpeed,
+            on_change_time=lambda t: self.timeline_mgr.Seek(t),
+            on_change_play=lambda p: (self.timeline_mgr.transport.Play() if p
+                                      else self.timeline_mgr.transport.Pause()),
+            on_change_playbackspeed=self.timeline_mgr.SetSpeed,
         )
 
         # Broadcast speed changes to WS clients
@@ -382,6 +413,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         """Called every frame before imgui.new_frame()."""
         delta = imgui.get_io().delta_time
         self.player.Update(delta)
+        self.timeline_mgr.Tick()
         idle = not (self.player.VideoLoaded() and not self.player.IsPaused())
         self.project.update(delta, idle)
         EV.process()
@@ -392,7 +424,8 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
             self._last_key_activity = time.monotonic()
         try:
             rp = hello_imgui.get_runner_params()
-            playing  = self.player.VideoLoaded() and not self.player.IsPaused()
+            playing  = self.timeline_mgr.IsPlaying() or (
+                self.player.VideoLoaded() and not self.player.IsPaused())
             key_held = (time.monotonic() - self._last_key_activity) < 0.25
             rp.fps_idling.enable_idling = not playing and not key_held
         except Exception:
@@ -402,6 +435,8 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
             self.simulator.mouse_on_sim,
         )
         self.scripting.Update()
+        # Sync transport from player after scripting frame-steps
+        self.timeline_mgr.SyncFromPlayer()
         self.script_timeline.Update()
         # Update thumbnail manager (renders pending frame with GL ctx current)
         self.thumbnail_mgr.Update()
@@ -476,6 +511,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
             self._show_project_window()
         self._draw_remove_confirm()
         self._draw_close_confirm()
+        self._draw_axis_wizard()
 
     def _after_swap(self) -> None:
         """Called after SDL_GL_SwapWindow."""
@@ -510,6 +546,8 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         EV.listen(OFS_Events.ACTION_SHOULD_CREATE, self._on_timeline_action_created)
         EV.listen(OFS_Events.ACTION_SHOULD_MOVE,   self._on_timeline_action_moved)
         EV.listen(OFS_Events.CHANGE_ACTIVE_SCRIPT, self._on_change_active_script)
+        EV.listen(OFS_Events.TIMELINE_TRACK_SELECTED, self._on_track_selected)
+        EV.listen(OFS_Events.TIMELINE_ADD_AXIS_REQUEST, self._on_add_axis_request)
 
     # ──────────────────────────────────────────────────────────────────────
     # Timeline action handlers  (mirrors OFS ScriptTimelineAction* handlers)
@@ -522,7 +560,12 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         if io.key_ctrl:
             script.SelectAction(action)
         else:
-            self.player.SetPositionExact(action.at / 1000.0)
+            # Seek: convert action local time to global transport time via track offset
+            local_t = action.at / 1000.0
+            fs_idx = self.project.funscripts.index(script) if script in self.project.funscripts else -1
+            trk = self.timeline_mgr.TrackForFunscript(fs_idx) if fs_idx >= 0 else None
+            global_t = trk.LocalToGlobal(local_t) if trk else local_t
+            self.timeline_mgr.Seek(global_t)
 
     def _on_change_active_script(self, idx: int, **kw) -> None:
         """Timeline clicked on a different track (mirrors OFS ScriptTimelineActiveScriptChanged)."""
@@ -548,9 +591,19 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
                 script.AddAction(action)
                 script.SelectAction(action)
 
+    def _on_track_selected(self, track_id: str, **kw) -> None:
+        """A track was clicked in the DAW — select it in the Track Info panel."""
+        self.track_info.SelectTrack(track_id)
+
+    def _on_add_axis_request(self, axis: str, **kw) -> None:
+        """DAW context menu requested adding a new axis track."""
+        self._add_axis_funscript(axis)
+
     def _on_video_loaded(self, path: str) -> None:
         log.info(f"Video loaded: {path}")
         self.status |= OFS_Status.GRADIENT_NEEDS_UPDATE
+        # Update video track in the DAW timeline now that duration/fps are known
+        self.timeline_mgr.AddOrUpdateVideoTrack()
         # Kick off background waveform extraction
         self.waveform.clear()
         if self.preferences.show_waveform:
@@ -567,6 +620,9 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
                 fs.metadata.duration = duration_ms
         self.status |= OFS_Status.GRADIENT_NEEDS_UPDATE
         self.web_api.BroadcastDurationChange(duration)
+        # Update the video track in the DAW timeline now that the real
+        # duration is known (mpv may report it after file-loaded).
+        self.timeline_mgr.AddOrUpdateVideoTrack()
 
     def _on_time_change(self, time_s: float) -> None:
         self.web_api.BroadcastTimeChange(time_s)
@@ -651,9 +707,17 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
             self._alert("Failed to open", self.project.errors)
 
     def _init_project(self) -> None:
+        # Build timeline BEFORE opening video so the Video layer already
+        # exists when _on_video_loaded fires (prevents duplicate tracks).
+        self.timeline_mgr.SetProject(self.project)
+        self.timeline_mgr.BuildFromProject()
         media = self.project.media_path
         if media and os.path.exists(media):
             self.player.OpenVideo(media)
+        # Auto-select the Video track in Track Info panel
+        vtracks = self.timeline_mgr.timeline.VideoTracks()
+        if vtracks:
+            self.track_info.SelectTrack(vtracks[0][1].id)
         self._update_title()
         self._last_backup = time.monotonic()
 
@@ -661,6 +725,8 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         """Persist the current project to disk. Mirrors ``OpenFunscripter::saveProject``."""
         if not self.project.is_valid:
             return
+        # Persist timeline layout in project extra-state
+        self.timeline_mgr.SaveToProject()
         self.project.Save()
 
     def QuickExport(self) -> None:
@@ -671,6 +737,9 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         """Close the current project and video. Mirrors ``OpenFunscripter::closeProject``."""
         self.project.reset()
         self.player.CloseVideo()
+        # Reset DAW timeline
+        from src.core.timeline import Timeline
+        self.timeline_mgr.timeline = Timeline()
         self._update_title()
 
     def PickDifferentMedia(self) -> None:
@@ -793,22 +862,41 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
                    for s in self.project.funscripts)
 
     def _add_axis_funscript(self, axis: str) -> None:
-        """Add a new empty script for the given axis suffix (e.g. 'surge')."""
-        scripts = self.project.funscripts
-        if not scripts:
-            return
-        root_abs = self.project._make_path_absolute(scripts[0].relative_path)
+        """Open the Add Track wizard for the given axis suffix (e.g. 'surge')."""
         from pathlib import Path as _P
-        root = _P(root_abs)
-        new_path = str(root.with_suffix("").with_suffix("") .parent /
-                       (root.stem.split(".")[0] + f".{axis}.funscript"))
-        if not self._is_script_already_loaded(new_path):
-            self.project.AddFunscript(new_path)
-            self.project.active_idx = len(self.project.funscripts) - 1
-            self.status |= OFS_Status.GRADIENT_NEEDS_UPDATE
+        scripts = self.project.funscripts
+        if scripts:
+            root_abs = self.project._make_path_absolute(scripts[0].relative_path)
+            root = _P(root_abs)
+            new_path = str(root.with_suffix("").with_suffix("").parent /
+                           (root.stem.split(".")[0] + f".{axis}.funscript"))
+        elif self.project.media_path:
+            mp = _P(self.project.media_path)
+            new_path = str(mp.with_suffix("").parent /
+                           (mp.stem + f".{axis}.funscript"))
+        else:
+            return
+        if self._is_script_already_loaded(new_path):
+            return
+        # Open wizard
+        self._axis_wiz_open = True
+        self._axis_wiz_name = axis
+        self._axis_wiz_axis = axis
+        self._axis_wiz_path = new_path
+        self._axis_wiz_mode = 0
+        self._axis_wiz_copy_idx = 0
+        # Pre-fill defaults from video track if available
+        vtracks = self.timeline_mgr.timeline.VideoTracks()
+        if vtracks:
+            vt = vtracks[0][1]
+            self._axis_wiz_offset = vt.offset
+            self._axis_wiz_duration = vt.duration
+        else:
+            self._axis_wiz_offset = 0.0
+            self._axis_wiz_duration = self.timeline_mgr.Duration() or 60.0
 
     def _add_new_funscript_dialog(self) -> None:
-        """Open a save-file dialog to create a new blank funscript track."""
+        """Open a save-file dialog, then show the Add Track wizard."""
         try:
             from imgui_bundle import portable_file_dialogs as pfd
             default = self.project.path or ""
@@ -817,15 +905,34 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
                 filters=["Funscript", "*.funscript"]
             ).result()
             if result:
-                if not self._is_script_already_loaded(result):
-                    self.project.AddFunscript(result)
-                    self.project.active_idx = len(self.project.funscripts) - 1
-                    self.status |= OFS_Status.GRADIENT_NEEDS_UPDATE
+                if self._is_script_already_loaded(result):
+                    return
+                from pathlib import Path as _P
+                fname = _P(result).stem
+                # Open wizard
+                self._axis_wiz_open = True
+                self._axis_wiz_name = fname
+                self._axis_wiz_axis = ""
+                self._axis_wiz_path = result
+                self._axis_wiz_mode = 0
+                self._axis_wiz_copy_idx = 0
+                vtracks = self.timeline_mgr.timeline.VideoTracks()
+                if vtracks:
+                    vt = vtracks[0][1]
+                    self._axis_wiz_offset = vt.offset
+                    self._axis_wiz_duration = vt.duration
+                else:
+                    self._axis_wiz_offset = 0.0
+                    self._axis_wiz_duration = self.timeline_mgr.Duration() or 60.0
         except Exception as exc:
             log.warning(f"_add_new_funscript_dialog: {exc}")
 
     def _add_existing_funscript_dialog(self) -> None:
-        """Open a file dialog to import an existing .funscript into the project."""
+        """Open a file dialog to import existing .funscript files into the project.
+
+        Existing files already have actions, so they're added directly with
+        timing matching the video track (no wizard needed).
+        """
         try:
             from imgui_bundle import portable_file_dialogs as pfd
             result = pfd.open_file(
@@ -833,9 +940,22 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
                 filters=["Funscript", "*.funscript"]
             ).result()
             if result:
+                # Determine default timing from video track
+                vtracks = self.timeline_mgr.timeline.VideoTracks()
+                if vtracks:
+                    vt = vtracks[0][1]
+                    offset = vt.offset
+                    duration = vt.duration
+                else:
+                    offset = 0.0
+                    duration = self.timeline_mgr.Duration() or 60.0
                 for path in result:
-                    if not self._is_script_already_loaded(path):
-                        self.project.AddFunscript(path)
+                    if self._is_script_already_loaded(path):
+                        continue
+                    self.project.AddFunscript(path)
+                    new_idx = len(self.project.funscripts) - 1
+                    self.timeline_mgr.AddFunscriptTrack(
+                        new_idx, offset=offset, duration=duration)
                 self.project.active_idx = len(self.project.funscripts) - 1
                 self.status |= OFS_Status.GRADIENT_NEEDS_UPDATE
         except Exception as exc:
@@ -875,6 +995,137 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
                 imgui.close_current_popup()
             imgui.end_popup()
 
+    # ── Add Track wizard ──────────────────────────────────────────────
+
+    def _draw_axis_wizard(self) -> None:
+        """Modal popup for adding a new funscript track with timing options."""
+        if not self._axis_wiz_open:
+            return
+
+        popup_id = "Add Track###axis_wizard"
+        imgui.open_popup(popup_id)
+        flags = imgui.WindowFlags_.no_docking | imgui.WindowFlags_.always_auto_resize
+        opened, _ = imgui.begin_popup_modal(popup_id, True, flags)
+        if not opened:
+            return
+
+        imgui.text(f"New Track:  {self._axis_wiz_name}")
+        imgui.separator()
+        imgui.spacing()
+
+        # ── Mode selection: Copy vs Custom ────────────────────────────
+        if imgui.radio_button("Copy from existing track", self._axis_wiz_mode == 0):
+            self._axis_wiz_mode = 0
+        if imgui.radio_button("Custom timing", self._axis_wiz_mode == 1):
+            self._axis_wiz_mode = 1
+
+        imgui.spacing()
+        imgui.separator()
+        imgui.spacing()
+
+        tl = self.timeline_mgr.timeline
+        all_tracks = tl.AllTracks()
+
+        if self._axis_wiz_mode == 0:
+            # ── Copy from track ───────────────────────────────────────
+            # Build labels for combo
+            labels = []
+            for _lay, trk in all_tracks:
+                t_label = "VIDEO" if trk.track_type == 0 else trk.name
+                labels.append(f"{t_label}  ({trk.offset:.1f}s – {trk.end:.1f}s)")
+
+            if labels:
+                imgui.text("Source track")
+                imgui.set_next_item_width(320)
+                ch, self._axis_wiz_copy_idx = imgui.combo(
+                    "##wiz_src", self._axis_wiz_copy_idx, labels)
+                if self._axis_wiz_copy_idx < 0:
+                    self._axis_wiz_copy_idx = 0
+                if self._axis_wiz_copy_idx >= len(all_tracks):
+                    self._axis_wiz_copy_idx = len(all_tracks) - 1
+
+                # Show preview of what will be copied
+                if 0 <= self._axis_wiz_copy_idx < len(all_tracks):
+                    _, src = all_tracks[self._axis_wiz_copy_idx]
+                    imgui.spacing()
+                    imgui.text_disabled("Preview:")
+                    imgui.text(f"  Offset:    {src.offset:.3f} s")
+                    imgui.text(f"  Duration:  {src.duration:.3f} s")
+                    imgui.text(f"  End:       {src.end:.3f} s")
+            else:
+                imgui.text_disabled("No tracks available to copy from.")
+        else:
+            # ── Custom timing ─────────────────────────────────────────
+            field_w = 200.0
+
+            imgui.text("Offset")
+            imgui.same_line(100)
+            imgui.set_next_item_width(field_w)
+            _, self._axis_wiz_offset = imgui.input_float(
+                "##wiz_off", self._axis_wiz_offset, 0.1, 1.0, "%.3f s")
+            self._axis_wiz_offset = max(0.0, self._axis_wiz_offset)
+
+            imgui.text("Duration")
+            imgui.same_line(100)
+            imgui.set_next_item_width(field_w)
+            _, self._axis_wiz_duration = imgui.input_float(
+                "##wiz_dur", self._axis_wiz_duration, 0.1, 1.0, "%.3f s")
+            self._axis_wiz_duration = max(0.001, self._axis_wiz_duration)
+
+            end_t = self._axis_wiz_offset + self._axis_wiz_duration
+            imgui.text("End")
+            imgui.same_line(100)
+            imgui.text(f"{end_t:.3f} s")
+
+        imgui.spacing()
+        imgui.separator()
+        imgui.spacing()
+
+        # ── Action buttons ────────────────────────────────────────────
+        if imgui.button("Create", ImVec2(120, 0)):
+            self._finalize_add_track()
+            self._axis_wiz_open = False
+            imgui.close_current_popup()
+        imgui.same_line()
+        if imgui.button("Cancel", ImVec2(120, 0)):
+            self._axis_wiz_open = False
+            imgui.close_current_popup()
+
+        imgui.end_popup()
+
+    def _finalize_add_track(self) -> None:
+        """Actually create the funscript and DAW track from wizard state."""
+        path = self._axis_wiz_path
+        if not path or self._is_script_already_loaded(path):
+            return
+
+        # Determine timing from wizard mode
+        if self._axis_wiz_mode == 0:
+            # Copy from existing track
+            all_tracks = self.timeline_mgr.timeline.AllTracks()
+            idx = self._axis_wiz_copy_idx
+            if 0 <= idx < len(all_tracks):
+                _, src = all_tracks[idx]
+                offset = src.offset
+                duration = src.duration
+            else:
+                offset = 0.0
+                duration = self.timeline_mgr.Duration() or 60.0
+        else:
+            # Custom timing
+            offset = self._axis_wiz_offset
+            duration = self._axis_wiz_duration
+
+        # Create the funscript in the project
+        self.project.AddFunscript(path)
+        new_idx = len(self.project.funscripts) - 1
+        self.project.active_idx = new_idx
+        self.status |= OFS_Status.GRADIENT_NEEDS_UPDATE
+
+        # Add corresponding track in the DAW timeline with chosen timing
+        self.timeline_mgr.AddFunscriptTrack(
+            new_idx, offset=offset, duration=duration)
+
     def _confirm_remove_funscript(self, idx: int) -> None:
         """Store pending remove index; actual removal happens in _draw_remove_confirm."""
         self._pending_remove_idx = idx
@@ -895,10 +1146,16 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
             imgui.text_disabled("(The file will not be deleted from disk.)")
             imgui.spacing()
             if imgui.button("Yes", ImVec2(120, 0)):
+                # Remove the corresponding timeline track first
+                trk = self.timeline_mgr.TrackForFunscript(idx)
+                if trk:
+                    self.timeline_mgr.RemoveTrack(trk.id)
                 self.project.RemoveFunscript(idx)
                 # Keep active index valid
                 if self.project.active_idx > 0:
                     self.project.active_idx -= 1
+                # Rebuild timeline to fix funscript_idx references
+                self.timeline_mgr.BuildFromProject()
                 self._update_title()
                 self.status |= OFS_Status.GRADIENT_NEEDS_UPDATE
                 self._pending_remove_idx = -1
@@ -976,6 +1233,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
             self.show_metadata               = state.get("show_metadata",               self.show_metadata)
             self.show_ws_api                 = state.get("show_ws_api",                 self.show_ws_api)
             self.show_video                  = state.get("show_video",                  self.show_video)
+            self.show_track_info             = state.get("show_track_info",             self.show_track_info)
             self.always_show_bookmark_labels = state.get("always_show_bookmark_labels", self.always_show_bookmark_labels)
             self._ws_active                  = state.get("ws_active",                   self._ws_active)
             self.player_window.video_mode    = state.get("video_mode",                 self.player_window.video_mode)
@@ -995,6 +1253,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
             "show_metadata":               self.show_metadata,
             "show_ws_api":                 self.show_ws_api,
             "show_video":                  self.show_video,
+            "show_track_info":             self.show_track_info,
             "always_show_bookmark_labels": self.always_show_bookmark_labels,
             "ws_active":                   self._ws_active,
             "video_mode":                  self.player_window.video_mode,

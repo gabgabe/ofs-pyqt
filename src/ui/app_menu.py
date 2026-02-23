@@ -173,6 +173,7 @@ class MenuBarMixin:
             _, self.show_chapter_mgr = imgui.menu_item("Chapters",         "", self.show_chapter_mgr)
             _, self.show_metadata    = imgui.menu_item("Metadata",         "", self.show_metadata)
             _, self.show_ws_api      = imgui.menu_item("WebSocket API",    "", self.show_ws_api)
+            _, self.show_track_info  = imgui.menu_item("Track Info",       "", self.show_track_info)
             imgui.separator()
             imgui.separator()
             _, self.always_show_bookmark_labels = imgui.menu_item(
