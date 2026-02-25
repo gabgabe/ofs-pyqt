@@ -565,6 +565,16 @@ class Funscript:
         for a in self.actions.GetActionsInRange(start_ms, end_ms):
             self.selection.Add(FunscriptAction(a.at, a.pos))
 
+    def SelectRect(self, start_s: float, end_s: float,
+                   min_pos: int, max_pos: int) -> None:
+        """Select actions within a time range AND value (pos) range."""
+        self.selection.Clear()
+        start_ms = int(start_s * 1000)
+        end_ms = int(end_s * 1000)
+        for a in self.actions.GetActionsInRange(start_ms, end_ms):
+            if min_pos <= a.pos <= max_pos:
+                self.selection.Add(FunscriptAction(a.at, a.pos))
+
     def HasSelection(self) -> bool:
         """Return whether any actions are selected. Mirrors ``Funscript::HasSelection``."""
         return len(self.selection) > 0

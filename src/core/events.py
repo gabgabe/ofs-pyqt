@@ -68,6 +68,7 @@ class OFS_Events:
     TIMELINE_LAYER_MUTE   = "TimelineLayerMute"
     TIMELINE_LAYOUT_CHANGED = "TimelineLayoutChanged"
     TIMELINE_TRACK_SELECTED = "TimelineTrackSelected"
+    TIMELINE_TRACK_DESELECTED = "TimelineTrackDeselected"
     TIMELINE_ADD_AXIS_REQUEST = "TimelineAddAxisRequest"   # axis=str
 
     # Drag-and-drop

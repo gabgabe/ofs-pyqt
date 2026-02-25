@@ -61,16 +61,27 @@ class OFS_VideoplayerWindow:
 
     # ──────────────────────────────────────────────────────────────────────
 
-    def Draw(self, player: OFS_Videoplayer, draw_video: bool = True) -> None:
+    def Draw(self, player: OFS_Videoplayer, draw_video: bool = True,
+             timeline_mgr=None) -> None:
         """
         Called inside the dockable window (begin/end handled by hello_imgui).
         `draw_video` mirrors OFS draw_video flag.
+        `timeline_mgr` if provided, video is hidden when transport is outside
+        all video clips.
         """
         avail = imgui.get_content_region_avail()
         if avail.x <= 0 or avail.y <= 0:
             return
 
-        if not draw_video or not player.VideoLoaded():
+        # Check if transport is inside any video clip
+        in_any_video = True
+        if timeline_mgr is not None:
+            pos = timeline_mgr.transport.position
+            vtracks = timeline_mgr.timeline.VideoTracks()
+            if vtracks:
+                in_any_video = any(vt.ContainsGlobal(pos) for _l, vt in vtracks)
+
+        if not draw_video or not player.VideoLoaded() or not in_any_video:
             # Show placeholder when no video
             cx = imgui.get_cursor_screen_pos().x + avail.x * 0.5
             cy = imgui.get_cursor_screen_pos().y + avail.y * 0.5

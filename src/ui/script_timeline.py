@@ -55,6 +55,8 @@ COL_TIMELINE_BG     = _col32(0.10, 0.10, 0.10, 1.00)
 COL_CURSOR          = _col32(1.00, 1.00, 1.00, 0.90)
 COL_ACTION          = _col32(0.30, 0.70, 0.30, 1.00)
 COL_ACTION_SEL      = _col32(0.02, 0.99, 0.01, 1.00)  # Green for selected (OFS: 11,252,3)
+COL_ACTION_SEL_RING = _col32(1.00, 1.00, 1.00, 0.95)   # White outer ring for selected
+COL_LINE_SEL        = _col32(0.10, 1.00, 0.10, 0.95)   # Bright green for selected lines
 COL_ACTION_LINE     = _col32(0.30, 0.70, 0.30, 0.50)
 COL_SEL_RECT        = _col32(0.01, 0.99, 0.81, 0.39)  # Cyan (OFS: 3,252,207,100)
 COL_SEL_RECT_BORDER = _col32(0.01, 0.99, 0.81, 0.90)
@@ -178,12 +180,23 @@ class ScriptTimeline:
         self._win_size: ImVec2 = ImVec2(0, 0)
 
         # ── DAW mode state ────────────────────────────────────────────────
+        # Currently selected track id (highlight in DAW view)
+        self._selected_track_id: Optional[str] = None
         # Horizontal drag on a clip (track offset change)
         self._daw_dragging_track_id: Optional[str] = None
         self._daw_drag_start_offset: float = 0.0
         self._daw_drag_start_mx: float     = 0.0
         # Vertical scroll offset (px) — for when layers overflow the window
         self._daw_v_scroll: float = 0.0
+        # Snap: when dragging, snap track edges to nearby track edges
+        self.snap_tracks: bool = True
+        self._daw_snap_threshold_px: float = 10.0  # snap within this many pixels
+        # Shift+drag rectangular selection in DAW mode
+        self._daw_selecting: bool = False
+        self._daw_sel_start_mx: float = 0.0
+        self._daw_sel_start_my: float = 0.0
+        self._daw_sel_track_id: Optional[str] = None
+        self._daw_sel_layer_idx: int = -1
 
     # ──────────────────────────────────────────────────────────────────────
 
@@ -679,7 +692,7 @@ class ScriptTimeline:
 
                         # Highlight selected segments
                         if is_active and (prev_action in script.selection) and (a in script.selection):
-                            dl.add_line(p1, p2, COL_SEL_RECT_BORDER, LINE_THICKNESS)
+                            dl.add_line(p1, p2, COL_LINE_SEL, LINE_THICKNESS + 1.0)
                     prev_action = a
 
         # ── Draw action points (with dynamic size based on zoom) ─────────
@@ -698,12 +711,15 @@ class ScriptTimeline:
                     
                     selected = is_active and (a in script.selection)
                     
-                    # Black border
-                    dl.add_circle_filled(sc, point_size, _col32(0, 0, 0, opacity), 4)
-                    # Inner circle
                     if selected:
-                        dl.add_circle_filled(sc, point_size * 0.7, COL_ACTION_SEL, 4)
+                        # Selected: white outer ring + bright green inner
+                        sel_ps = point_size * 1.6
+                        dl.add_circle_filled(sc, sel_ps, COL_ACTION_SEL_RING, 8)
+                        dl.add_circle_filled(sc, sel_ps * 0.65, COL_ACTION_SEL, 8)
                     else:
+                        # Black border
+                        dl.add_circle_filled(sc, point_size, _col32(0, 0, 0, opacity), 4)
+                        # Inner circle
                         col_inner = COL_ACTION if is_active else COL_INACTIVE_TRACK
                         dl.add_circle_filled(sc, point_size * 0.7, col_inner, 4)
         # ── MaxSpeedHighlight — red overlay on very-fast segments ───────────────
@@ -1046,7 +1062,7 @@ class ScriptTimeline:
         self._win_size = avail
 
         # ── Layout dimensions ──────────────────────────────────────────────
-        label_w  = DAW_LABEL_W
+        label_w  = 0.0
         ruler_h  = DAW_RULER_H
         body_x   = win_pos.x + label_w
         body_w   = max(1.0, avail.x - label_w)
@@ -1137,9 +1153,7 @@ class ScriptTimeline:
                     COL_DAW_MUTED_OVERLAY,
                 )
 
-            # ── Layer label column (left side) ─────────────────────────────
-            self._draw_daw_layer_label(
-                dl, layer, win_pos.x, ly, label_w, layer_h, layer_slot)
+            # (layer label column removed — clip name shown inside clip rect)
 
         dl.pop_clip_rect()
 
@@ -1194,6 +1208,8 @@ class ScriptTimeline:
         if imgui.begin_popup_context_item("##daw_ctx"):
             _, self.follow_cursor = imgui.menu_item(
                 "Follow playback cursor", "", self.follow_cursor)
+            _, self.snap_tracks = imgui.menu_item(
+                "Snap tracks", "", self.snap_tracks)
             imgui.separator()
 
             # ── Add track submenu ──────────────────────────────────────────
@@ -1335,8 +1351,11 @@ class ScriptTimeline:
         dl.add_rect_filled(ImVec2(cx1_clamp, clip_y1), ImVec2(cx2_clamp, clip_y2), clip_col, 3.0)
 
         # ── Clip border ─────────────────────────────────────────────────────
+        is_selected = (trk.id == self._selected_track_id)
+        border_col = _col32(1.0, 1.0, 1.0, 0.90) if is_selected else COL_DAW_CLIP_BORDER
+        border_thick = 2.0 if is_selected else 1.0
         dl.add_rect(ImVec2(cx1_clamp, clip_y1), ImVec2(cx2_clamp, clip_y2),
-                    COL_DAW_CLIP_BORDER, 3.0, 0, 1.0)
+                    border_col, 3.0, 0, border_thick)
 
         # ── Clip title ──────────────────────────────────────────────────────
         clip_name = trk.name[:20]
@@ -1512,6 +1531,9 @@ class ScriptTimeline:
                         col_line = COL_INACTIVE_LINE
                     dl.add_line(p1, p2, _col32(0, 0, 0, 1.0), 5.0)
                     dl.add_line(p1, p2, col_line, 2.0)
+                    # Highlight selected segments
+                    if is_active and (prev_a in script.selection) and (a in script.selection):
+                        dl.add_line(p1, p2, COL_LINE_SEL, 3.0)
                 prev_a = a
 
         # ── Action dots ───────────────────────────────────────────────────
@@ -1524,10 +1546,14 @@ class ScriptTimeline:
                     ax = _local_ms_to_px(a.at)
                     ay = _pos_to_py(a.pos)
                     selected = is_active and (a in script.selection)
-                    dl.add_circle_filled(ImVec2(ax, ay), ps, _col32(0, 0, 0, opacity), 4)
-                    inner_col = COL_ACTION_SEL if selected else (
-                        COL_ACTION if is_active else COL_INACTIVE_TRACK)
-                    dl.add_circle_filled(ImVec2(ax, ay), ps * 0.7, inner_col, 4)
+                    if selected:
+                        sel_ps = ps * 1.8
+                        dl.add_circle_filled(ImVec2(ax, ay), sel_ps, COL_ACTION_SEL_RING, 8)
+                        dl.add_circle_filled(ImVec2(ax, ay), sel_ps * 0.6, COL_ACTION_SEL, 8)
+                    else:
+                        dl.add_circle_filled(ImVec2(ax, ay), ps, _col32(0, 0, 0, opacity), 4)
+                        inner_col = COL_ACTION if is_active else COL_INACTIVE_TRACK
+                        dl.add_circle_filled(ImVec2(ax, ay), ps * 0.7, inner_col, 4)
 
     # ──────────────────────────────────────────────────────────────────────
     # DAW: Interaction handling
@@ -1621,12 +1647,83 @@ class ScriptTimeline:
                     dx_px = mouse.x - self._daw_drag_start_mx
                     secs_per_px = visible / body_w if body_w > 0 else 0
                     new_offset = self._daw_drag_start_offset + dx_px * secs_per_px
-                    trk.offset = max(0.0, new_offset)
+                    new_offset = max(0.0, new_offset)
+                    # Snap to other track edges if enabled
+                    if self.snap_tracks and secs_per_px > 0:
+                        snap_thresh_s = self._daw_snap_threshold_px * secs_per_px
+                        new_end = new_offset + trk.duration
+                        best_snap = None
+                        best_dist = snap_thresh_s
+                        for lay2 in tl.layers:
+                            for t2 in lay2.tracks:
+                                if t2.id == trk.id:
+                                    continue
+                                # snap dragged start to other start/end
+                                for edge in (t2.offset, t2.end):
+                                    d = abs(new_offset - edge)
+                                    if d < best_dist:
+                                        best_dist = d
+                                        best_snap = edge
+                                # snap dragged end to other start/end
+                                for edge in (t2.offset, t2.end):
+                                    d = abs(new_end - edge)
+                                    if d < best_dist:
+                                        best_dist = d
+                                        best_snap = edge - trk.duration
+                        if best_snap is not None:
+                            new_offset = max(0.0, best_snap)
+                    trk.offset = new_offset
             else:
                 # Released
                 self._daw_dragging_track_id = None
                 EV.dispatch(OFS_Events.TIMELINE_TRACK_MOVED)
             return  # absorb all left-click while dragging
+
+        # ── ESC → deselect all actions ────────────────────────────────────
+        if imgui.is_key_pressed(imgui.Key.escape):
+            for s in scripts:
+                if s.HasSelection():
+                    s.ClearSelection()
+            self._daw_selecting = False
+
+        # ── Shift+drag rectangular selection (continuation) ───────────────
+        if self._daw_selecting:
+            dl = imgui.get_window_draw_list()
+            # Draw selection rectangle
+            x0 = min(self._daw_sel_start_mx, mouse.x)
+            x1 = max(self._daw_sel_start_mx, mouse.x)
+            y0 = min(self._daw_sel_start_my, mouse.y)
+            y1 = max(self._daw_sel_start_my, mouse.y)
+            dl.add_rect_filled(ImVec2(x0, y0), ImVec2(x1, y1), COL_SEL_RECT)
+            dl.add_rect(ImVec2(x0, y0), ImVec2(x1, y1), COL_SEL_RECT_BORDER)
+
+            if not imgui.is_mouse_down(0):
+                # Released — perform selection
+                if self._daw_sel_track_id and self._daw_sel_layer_idx >= 0:
+                    result = tl.FindTrack(self._daw_sel_track_id)
+                    if result:
+                        _lay, trk = result
+                        if trk.track_type == TrackType.FUNSCRIPT and trk.funscript_data:
+                            fs_idx = trk.funscript_data.funscript_idx
+                            if 0 <= fs_idx < len(scripts):
+                                script = scripts[fs_idx]
+                                # Convert pixel rect to time/pos rect
+                                t0 = self._x_to_time(x0, body_x, body_w, t_start, t_end)
+                                t1 = self._x_to_time(x1, body_x, body_w, t_start, t_end)
+                                local_t0 = trk.GlobalToLocal(t0)
+                                local_t1 = trk.GlobalToLocal(t1)
+                                # Convert y to pos (inner area of the clip)
+                                ly = body_y + self._daw_sel_layer_idx * layer_h - v_off + 14.0
+                                lh = layer_h - 15.0
+                                pos0 = self._y_to_pos(y1, ly, lh)  # y1=bottom → lower pos
+                                pos1 = self._y_to_pos(y0, ly, lh)  # y0=top → higher pos
+                                pos0 = max(0, min(100, pos0))
+                                pos1 = max(0, min(100, pos1))
+                                script.SelectRect(
+                                    local_t0, local_t1,
+                                    min(pos0, pos1), max(pos0, pos1))
+                self._daw_selecting = False
+            return  # absorb mouse while selecting
 
         # ── Hover cursor: hand when Option held over a clip, else normal ──
         if is_item_hovered and not in_ruler and self._daw_dragging_track_id is None:
@@ -1678,6 +1775,13 @@ class ScriptTimeline:
                     # Click on action dot → select / seek
                     EV.dispatch(OFS_Events.ACTION_CLICKED,
                                 action=hit_a, script=script)
+                elif io.key_shift and hit_track.track_type == TrackType.FUNSCRIPT:
+                    # Shift+click in funscript clip → start rectangular selection
+                    self._daw_selecting = True
+                    self._daw_sel_start_mx = mouse.x
+                    self._daw_sel_start_my = mouse.y
+                    self._daw_sel_track_id = hit_track.id
+                    self._daw_sel_layer_idx = hovered_layer_idx
                 elif io.key_alt:
                     # Option+click on clip → start horizontal drag
                     self._daw_dragging_track_id = hit_track.id
@@ -1701,7 +1805,8 @@ class ScriptTimeline:
                     # Plain click on clip body → seek transport
                     tp.Seek(max(0.0, click_t))
             else:
-                # Click on empty → seek transport
+                # Click on empty → deselect track + seek transport
+                EV.dispatch(OFS_Events.TIMELINE_TRACK_DESELECTED)
                 tp.Seek(max(0.0, click_t))
 
         # ── Double-click → seek ───────────────────────────────────────────

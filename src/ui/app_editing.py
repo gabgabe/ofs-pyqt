@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 class EditingCommandsMixin:
     """Editing operations extracted from *OpenFunscripter*.
 
-    Every method uses ``self: "OpenFunscripter"`` annotations so that
+    Every method uses ``self: `` annotations so that
     IDE autocompletion / type-checking still works.
     """
 

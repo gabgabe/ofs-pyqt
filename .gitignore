@@ -46,3 +46,4 @@ OpenFunscripter*.ini
 .coverage
 *.log
 docs/OFS/
+docs/

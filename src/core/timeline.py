@@ -75,17 +75,35 @@ class TransportState(IntEnum):
 
 @dataclass
 class VideoTrackData:
-    """Payload attached to a VIDEO track."""
+    """Payload attached to a VIDEO track.
+
+    Stores per-track video metadata so that each clip on the timeline
+    carries its own media information.
+    """
     media_path: str = ""
     fps: float = 30.0
+    media_duration: float = 0.0   # seconds (full file duration)
+    width: int = 0
+    height: int = 0
 
     def to_dict(self) -> dict:
-        return {"media_path": self.media_path, "fps": self.fps}
+        return {
+            "media_path": self.media_path,
+            "fps": self.fps,
+            "media_duration": self.media_duration,
+            "width": self.width,
+            "height": self.height,
+        }
 
     @classmethod
     def from_dict(cls, d: dict) -> "VideoTrackData":
-        return cls(media_path=d.get("media_path", ""),
-                   fps=float(d.get("fps", 30.0)))
+        return cls(
+            media_path=d.get("media_path", ""),
+            fps=float(d.get("fps", 30.0)),
+            media_duration=float(d.get("media_duration", 0.0)),
+            width=int(d.get("width", 0)),
+            height=int(d.get("height", 0)),
+        )
 
 
 @dataclass

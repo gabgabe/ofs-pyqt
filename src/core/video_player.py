@@ -183,7 +183,16 @@ class OFS_Videoplayer:
         # Without this mpv defaults to vo=gpu and opens its own Cocoa/X11 window.
         self._mpv = _mpv_module.MPV(vo="libmpv")
         try:
-            self._mpv["loop-file"] = "inf"
+            # Don't loop — timeline transport controls playback flow.
+            # loop_file="inf" caused end-of-video flashing when transport
+            # reached the clip's end boundary.
+            self._mpv["loop-file"] = "no"
+        except Exception:
+            pass
+
+        try:
+            # Keep video open at last frame when reaching EOF (don't close).
+            self._mpv["keep-open"] = "yes"
         except Exception:
             pass
 
@@ -506,11 +515,11 @@ class OFS_Videoplayer:
         """Step forward or backward by *offset* video frames. Mirrors ``OFS_Videoplayer::SeekFrames``."""
         if not self._mpv:
             return
-        # Rate-limit: don't flood mpv's command queue faster than the video
-        # frame rate.  Without this, holding a key causes a burst of queued
-        # frame-step commands that fire all at once → stuttering.
+        # Rate-limit: don't flood mpv's command queue faster than a single
+        # frame time.  This only throttles individual SeekFrames calls —
+        # the keybinding system already handles repeat timing.
         now = _time.monotonic()
-        min_interval = self.FrameTime() * abs(offset) * 0.80
+        min_interval = self.FrameTime() * 0.5
         if now - self._last_seek_time < min_interval:
             return
         self._last_seek_time = now

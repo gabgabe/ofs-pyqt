@@ -167,7 +167,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         params = hello_imgui.RunnerParams()
 
         # Window
-        params.app_window_params.window_title = "OpenFunscripter"
+        params.app_window_params.window_title = "timeline"
         params.app_window_params.window_geometry.size = (1920, 1080)
         params.app_window_params.restore_previous_geometry = True
 
@@ -177,7 +177,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         )
         params.imgui_window_params.show_menu_bar     = True
         params.imgui_window_params.show_status_bar   = False
-        params.imgui_window_params.menu_app_title    = "OpenFunscripter"
+        params.imgui_window_params.menu_app_title    = "timeline"
 
         # FPS idling — disabled while video plays, re-enabled when paused/idle.
         # Toggled every frame in _pre_new_frame based on playback state.
@@ -239,7 +239,8 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
                 label_="Video###VIDEOPLAYER",
                 dock_space_name_="MainDockSpace",
                 gui_function_=lambda: app.player_window.Draw(
-                    app.player, app.show_video
+                    app.player, app.show_video,
+                    timeline_mgr=app.timeline_mgr,
                 ),
                 is_visible_=True,
             ),
@@ -503,7 +504,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
             self.player, self.project, self.show_chapter_mgr
         )
         self.show_metadata = self.metadata_editor.Show(
-            self.player, self.project, self.show_metadata
+            self.player, self.project, self.show_metadata, self.timeline_mgr
         )
         if self.show_preferences:
             self.show_preferences = self.preferences.Show()
@@ -551,6 +552,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         EV.listen(OFS_Events.ACTION_SHOULD_MOVE,   self._on_timeline_action_moved)
         EV.listen(OFS_Events.CHANGE_ACTIVE_SCRIPT, self._on_change_active_script)
         EV.listen(OFS_Events.TIMELINE_TRACK_SELECTED, self._on_track_selected)
+        EV.listen(OFS_Events.TIMELINE_TRACK_DESELECTED, self._on_track_deselected)
         EV.listen(OFS_Events.TIMELINE_ADD_AXIS_REQUEST, self._on_add_axis_request)
 
     # ──────────────────────────────────────────────────────────────────────
@@ -558,11 +560,15 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
     # ──────────────────────────────────────────────────────────────────────
 
     def _on_timeline_action_clicked(self, action, script, **kw) -> None:
-        """Left-click on dot: Ctrl → select, else → seek  (mirrors OFS ScriptTimelineActionClicked)."""
+        """Left-click on dot: Ctrl/Shift → multi-select, else → seek  (mirrors OFS ScriptTimelineActionClicked)."""
         from imgui_bundle import imgui as _imgui
         io = _imgui.get_io()
-        if io.key_ctrl:
-            script.SelectAction(action)
+        if io.key_ctrl or io.key_shift:
+            # Toggle selection (Ctrl or Shift for multi-select)
+            if action in script.selection:
+                script.DeselectAction(action)
+            else:
+                script.SelectAction(action)
         else:
             # Seek: convert action local time to global transport time via track offset
             local_t = action.at / 1000.0
@@ -599,6 +605,18 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         """A track was clicked in the DAW — select it in the Track Info panel."""
         self.track_info.SelectTrack(track_id)
         self.player_controls.SetSelectedTrackId(track_id)
+        self.script_timeline._selected_track_id = track_id
+        # Recompute heatmap for the new effective range
+        self.status |= OFS_Status.GRADIENT_NEEDS_UPDATE
+
+    def _on_track_deselected(self, **kw) -> None:
+        """Clicked empty space in DAW — deselect the track."""
+        self.track_info.SelectTrack(None)
+        self.player_controls.SetSelectedTrackId(None)
+        self.script_timeline._selected_track_id = None
+        # Clear heatmap when no track is selected
+        self.player_controls._heatmap_colours = []
+        self.player_controls._heatmap_dirty = True
 
     def _on_add_axis_request(self, axis: str, **kw) -> None:
         """DAW context menu requested adding a new axis track."""
@@ -618,15 +636,12 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         self.web_api.BroadcastProjectChange()
 
     def _on_duration_change(self, duration: float) -> None:
-        if self.project.is_valid:
-            # Update duration (ms) on all loaded funscripts' metadata
-            duration_ms = int(duration * 1000)
-            for fs in self.project.funscripts:
-                fs.metadata.duration = duration_ms
         self.status |= OFS_Status.GRADIENT_NEEDS_UPDATE
         self.web_api.BroadcastDurationChange(duration)
         # Update the video track in the DAW timeline now that the real
         # duration is known (mpv may report it after file-loaded).
+        # Per-track metadata (fps, resolution, duration) is written inside
+        # AddOrUpdateVideoTrack rather than on every funscript globally.
         self.timeline_mgr.AddOrUpdateVideoTrack()
 
     def _on_time_change(self, time_s: float) -> None:
@@ -693,23 +708,46 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
 
     def _do_open_file(self, path: str) -> None:
         """Actually open a file without any unsaved-edits guard."""
-        self.project.reset()
         ext = os.path.splitext(path)[1].lower()
         if ext == ".ofsp":
+            self.project.reset()
             ok = self.project.Load(path)
+            if ok:
+                if path not in self.recent_files:
+                    self.recent_files.append(path)
+                self._init_project()
+            else:
+                self._alert("Failed to open", self.project.errors)
         elif ext == ".funscript":
-            ok = self.project.ImportFromFunscript(path)
+            # Import funscript into existing project as new track
+            if self.project.is_valid:
+                self._import_funscript_to_timeline(path)
+            else:
+                # No project open — create one from the funscript
+                self.project.reset()
+                ok = self.project.ImportFromFunscript(path)
+                if ok:
+                    if path not in self.recent_files:
+                        self.recent_files.append(path)
+                    self._init_project()
+                else:
+                    self._alert("Failed to import", self.project.errors)
         else:
-            ok = self.project.ImportFromMedia(path)
-        if ok:
-            if path not in self.recent_files:
-                self.recent_files.append(path)
-            self._init_project()
-            # OFS: show metadata editor automatically for new projects
-            if ext != ".ofsp" and self.preferences.show_metadata_on_new:
-                self.show_metadata = True
-        else:
-            self._alert("Failed to open", self.project.errors)
+            # Media file — add as video track to timeline
+            if self.project.is_valid:
+                self._add_media_to_timeline(path)
+            else:
+                # No project open — create one from the media
+                self.project.reset()
+                ok = self.project.ImportFromMedia(path)
+                if ok:
+                    if path not in self.recent_files:
+                        self.recent_files.append(path)
+                    self._init_project()
+                    if self.preferences.show_metadata_on_new:
+                        self.show_metadata = True
+                else:
+                    self._alert("Failed to open", self.project.errors)
 
     def _init_project(self) -> None:
         # Build timeline BEFORE opening video so the Video layer already
@@ -738,8 +776,86 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         """Export all funscripts next to the media file. Mirrors ``OpenFunscripter::quickExport``."""
         self.project.QuickExport()
 
+    def NewProject(self) -> None:
+        """Create a brand-new empty project via Save dialog."""
+        if self.project.is_valid and self.project.HasUnsavedEdits():
+            self._pending_open_path = "__new__"
+            self._show_close_confirm = True
+            return
+        self._do_new_project()
+
+    def _do_new_project(self) -> None:
+        """Actually create the new empty project."""
+        try:
+            from imgui_bundle import portable_file_dialogs as pfd
+            result = pfd.save_file(
+                "New project",
+                filters=["OFS Project", "*.ofsp"]
+            ).result()
+            if not result:
+                return
+            path = result
+            if not path.endswith(".ofsp"):
+                path += ".ofsp"
+        except ImportError:
+            log.warning("portable_file_dialogs not available")
+            return
+
+        # Close current
+        self.project.reset()
+        self.player.CloseVideo()
+        from src.core.timeline import Timeline
+        self.timeline_mgr.timeline = Timeline()
+
+        # Init empty project at chosen path
+        self.project._path = path
+        self.project._valid = True
+        self.project.Save()
+        if path not in self.recent_files:
+            self.recent_files.append(path)
+
+        # Build empty timeline and update UI
+        self.timeline_mgr.SetProject(self.project)
+        self.timeline_mgr.BuildFromProject()
+        self._update_title()
+        log.info(f"New empty project created: {path}")
+
+    def _save_as_dialog(self) -> None:
+        """Save current project to a new path (copy)."""
+        if not self.project.is_valid:
+            return
+        try:
+            from imgui_bundle import portable_file_dialogs as pfd
+            result = pfd.save_file(
+                "Save project as",
+                filters=["OFS Project", "*.ofsp"]
+            ).result()
+            if not result:
+                return
+            path = result
+            if not path.endswith(".ofsp"):
+                path += ".ofsp"
+        except ImportError:
+            log.warning("portable_file_dialogs not available")
+            return
+
+        self.timeline_mgr.SaveToProject()
+        self.project.Save(path)
+        if path not in self.recent_files:
+            self.recent_files.append(path)
+        self._update_title()
+        log.info(f"Project saved as: {path}")
+
     def CloseProject(self) -> None:
-        """Close the current project and video. Mirrors ``OpenFunscripter::closeProject``."""
+        """Close the current project and video."""
+        if self.project.is_valid and self.project.HasUnsavedEdits():
+            self._pending_open_path = "__close__"
+            self._show_close_confirm = True
+            return
+        self._do_close_project()
+
+    def _do_close_project(self) -> None:
+        """Actually close without any unsaved-edits guard."""
         self.project.reset()
         self.player.CloseVideo()
         # Reset DAW timeline
@@ -982,7 +1098,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         opened, _ = imgui.begin_popup_modal("Unsaved changes###close_confirm", True, flags)
         if opened:
             imgui.text("You have unsaved changes.")
-            imgui.text_disabled("Save them before opening a new file?")
+            imgui.text_disabled("Save them before continuing?")
             imgui.spacing()
             if imgui.button("Save", ImVec2(110, 0)):
                 self.SaveProject()
@@ -990,7 +1106,11 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
                 self._pending_open_path  = None
                 self._show_close_confirm = False
                 imgui.close_current_popup()
-                if path:
+                if path == "__new__":
+                    self._do_new_project()
+                elif path == "__close__":
+                    self._do_close_project()
+                elif path:
                     self._do_open_file(path)
             imgui.same_line()
             if imgui.button("Discard", ImVec2(110, 0)):
@@ -998,7 +1118,11 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
                 self._pending_open_path  = None
                 self._show_close_confirm = False
                 imgui.close_current_popup()
-                if path:
+                if path == "__new__":
+                    self._do_new_project()
+                elif path == "__close__":
+                    self._do_close_project()
+                elif path:
                     self._do_open_file(path)
             imgui.same_line()
             if imgui.button("Cancel", ImVec2(110, 0)):
@@ -1239,14 +1363,87 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         try:
             from imgui_bundle import portable_file_dialogs as pfd
             result = pfd.open_file(
-                "Open file",
-                filters=["Media / funscript / project",
-                         "*.mp4 *.mkv *.webm *.mov *.avi *.funscript *.ofsp *"]
+                "Open project",
+                filters=["OFS Project", "*.ofsp"]
             ).result()
             if result:
                 self.OpenFile(result[0])
         except ImportError:
             log.warning("portable_file_dialogs not available")
+
+    def _add_media_dialog(self) -> None:
+        """Open a file dialog for media files and add as a video track."""
+        try:
+            from imgui_bundle import portable_file_dialogs as pfd
+            result = pfd.open_file(
+                "Add media",
+                filters=["Media files",
+                         "*.mp4 *.mkv *.webm *.mov *.avi *.wav *.mp3 *.ogg *.flac"]
+            ).result()
+            if result:
+                self._add_media_to_timeline(result[0])
+        except ImportError:
+            log.warning("portable_file_dialogs not available")
+
+    def _add_media_to_timeline(self, path: str) -> None:
+        """Add a media file as a new video track on the timeline."""
+        from src.core.timeline import Track, TrackType, VideoTrackData
+
+        if not self.project.is_valid:
+            log.warning("No project open — cannot add media track.")
+            return
+
+        # Use the filename (no extension) as the track name
+        name = os.path.splitext(os.path.basename(path))[0]
+
+        # Find the rightmost end to place new media after existing content
+        all_tracks = self.timeline_mgr.timeline.AllTracks()
+        offset = 0.0
+        if all_tracks:
+            offset = max(t.end for _l, t in all_tracks)
+
+        # Create a placeholder video track — duration will be updated once
+        # mpv reports the real duration.
+        placeholder_dur = 10.0
+        vtrack = Track(
+            name=name,
+            track_type=TrackType.VIDEO,
+            offset=offset,
+            duration=placeholder_dur,
+            color=(100, 150, 220, 200),
+            trim_in=0.0,
+            trim_out=placeholder_dur,
+            media_duration=0.0,
+            video_data=VideoTrackData(media_path=path, fps=0.0),
+        )
+        # Place on the first Video layer, or create one
+        vid_layers = [
+            l for l in self.timeline_mgr.timeline.layers
+            if any(t.track_type == TrackType.VIDEO for t in l.tracks)
+        ]
+        if vid_layers:
+            vid_layers[0].AddTrack(vtrack)
+        else:
+            layer = self.timeline_mgr.timeline.AddLayer("Video")
+            self.timeline_mgr.timeline.layers.remove(layer)
+            self.timeline_mgr.timeline.layers.insert(0, layer)
+            layer.AddTrack(vtrack)
+
+        log.info(f"Added media track '{name}' at offset={offset:.2f}s  path={path}")
+        self.status |= OFS_Status.GRADIENT_NEEDS_UPDATE
+
+    def _import_funscript_to_timeline(self, path: str) -> None:
+        """Import a .funscript file into the current project as a new axis track."""
+        if not self.project.is_valid:
+            log.warning("No project open — cannot import funscript.")
+            return
+        ok = self.project.AddFunscript(path)
+        if ok:
+            self.timeline_mgr.BuildFromProject()
+            self.status |= OFS_Status.GRADIENT_NEEDS_UPDATE
+            self._update_title()
+        else:
+            self._alert("Failed to import", self.project.errors)
 
     def _export_active_dialog(self) -> None:
         try:

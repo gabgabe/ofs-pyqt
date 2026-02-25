@@ -269,6 +269,9 @@ class TimelineManager:
             vtrack.media_duration = vid_dur
             if vtrack.video_data:
                 vtrack.video_data.fps = fps
+                vtrack.video_data.media_duration = vid_dur
+                vtrack.video_data.width = self._player.VideoWidth()
+                vtrack.video_data.height = self._player.VideoHeight()
                 vtrack.video_data.media_path = (
                     self._project.media_path if self._project else "")
             # Detect placeholder: media_duration was 0 or changed significantly
@@ -297,6 +300,9 @@ class TimelineManager:
                 video_data=VideoTrackData(
                     media_path=self._project.media_path if self._project else "",
                     fps=fps,
+                    media_duration=vid_dur,
+                    width=self._player.VideoWidth(),
+                    height=self._player.VideoHeight(),
                 ),
             )
             vid_layer.AddTrack(vtrack)
@@ -432,18 +438,26 @@ class TimelineManager:
         Call this after external code (ScriptingMode frame-stepping, etc.)
         moves the player directly.  It keeps the transport in sync without
         requiring every caller to know about the transport.
+
+        When the transport is outside the video clip range we skip the sync
+        so that transport-initiated seeks beyond the video are not pulled back.
         """
         if not self._player or not self._player.VideoLoaded():
             return
-        mpv_t = self._player.CurrentTime()
-        # Convert media time back to global via video track offset + trim_in
+        # If the transport is currently outside the video clip, the player
+        # position is clamped — don't let that clamped value overwrite
+        # the real transport position.
         vtracks = self.timeline.VideoTracks()
         if vtracks:
             _layer, vtrack = vtracks[0]
+            if not vtrack.ContainsGlobal(self.transport.position):
+                return
             # Reverse of GlobalToMedia:  media_t = (global - offset) + trim_in
             #   => global = offset + media_t - trim_in
+            mpv_t = self._player.CurrentTime()
             global_t = vtrack.offset + mpv_t - vtrack.trim_in
         else:
+            mpv_t = self._player.CurrentTime()
             global_t = mpv_t
         # Only update if drift is significant (avoid feedback loop)
         if abs(self.transport.position - global_t) > 0.005:

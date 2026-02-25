@@ -48,6 +48,8 @@ class KeybindingsMixin:
 
         # ── Core ──────────────────────────────────────────────────────────
         reg_grp("Core", "Core")
+        reg("new_project",    self.NewProject,   "New project",      "Core",
+            [(K.mod_ctrl, K.n)])
         reg("save_project",   self.SaveProject,  "Save project",     "Core",
             [(K.mod_ctrl, K.s)])
         reg("quick_export",   self.QuickExport,  "Quick export",     "Core",
@@ -173,16 +175,19 @@ class KeybindingsMixin:
         def _frame_x3(direction: int) -> None:
             if not self.player.IsPaused():
                 return
-            key = K.right_arrow if direction > 0 else K.left_arrow
-            # Single click → 3 frames; held repeat → 10 frames per step
-            frames = 3 if imgui.is_key_pressed(key, repeat=False) else 10
-            self.player.SeekFrames(frames * direction * self.scripting._step_size)
+            # Ctrl+arrow: always 3 frames per step (single press or held repeat)
+            frames = 3
+            for _ in range(frames):
+                if direction > 0:
+                    self.scripting.NextFrame()
+                else:
+                    self.scripting.PreviousFrame()
 
         reg("prev_frame_x3", lambda: _frame_x3(-1),
-            "Previous frame ×3 / ×10 held", "Navigation",
+            "Previous frame ×3", "Navigation",
             [(K.mod_ctrl, K.left_arrow, True)], repeat=True)
         reg("next_frame_x3", lambda: _frame_x3(1),
-            "Next frame ×3 / ×10 held", "Navigation",
+            "Next frame ×3", "Navigation",
             [(K.mod_ctrl, K.right_arrow, True)], repeat=True)
 
         fast_step = self.preferences.fast_step_amount

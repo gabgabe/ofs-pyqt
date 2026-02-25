@@ -49,7 +49,9 @@ class MenuBarMixin:
 
         # ── FILE ──────────────────────────────────────────────────────────
         if imgui.begin_menu("File"):
-            if imgui.menu_item("Open...", "", False)[0]:
+            if imgui.menu_item("New project", "Ctrl+N", False)[0]:
+                self.NewProject()
+            if imgui.menu_item("Open...", "Ctrl+O", False)[0]:
                 self._open_file_dialog()
             if imgui.begin_menu("Recent files"):
                 for p in reversed(self.recent_files[-10:]):
@@ -63,6 +65,9 @@ class MenuBarMixin:
             valid = self.project.is_valid
             if imgui.menu_item("Save project",     "Ctrl+S",    False, valid)[0]:
                 self.SaveProject()
+            if imgui.menu_item("Save as...",       "",          False, valid)[0]:
+                self._save_as_dialog()
+            imgui.separator()
             if imgui.menu_item("Quick export",     "Ctrl+Shift+S", False, valid)[0]:
                 self.QuickExport()
             if imgui.menu_item("Export active...", "", False, valid)[0]:
@@ -70,6 +75,9 @@ class MenuBarMixin:
             multi = valid and len(self.project.funscripts) > 1
             if imgui.menu_item("Export all to dir...", "", False, multi)[0]:
                 self._export_all_dialog()
+            imgui.separator()
+            if imgui.menu_item("Close project", "", False, valid)[0]:
+                self.CloseProject()
             imgui.separator()
             auto_bk = bool(self.status & OFS_Status.AUTO_BACKUP)
             changed, auto_bk = imgui.menu_item("Auto backup", "", auto_bk)
@@ -94,6 +102,9 @@ class MenuBarMixin:
             imgui.separator()
             # ── Add submenu ──────────────────────────────────
             if imgui.begin_menu("Add"):
+                if imgui.menu_item("Add media...", "", False)[0]:
+                    self._add_media_dialog()
+                imgui.separator()
                 if imgui.begin_menu("Add axis"):
                     for axis in FUNSCRIPT_AXIS_NAMES:
                         if imgui.menu_item(axis, "", False)[0]:
@@ -211,6 +222,21 @@ class MenuBarMixin:
             self.status &= ~OFS_Status.GRADIENT_NEEDS_UPDATE
             s = self._active()
             if s:
-                self.player_controls.UpdateHeatmap(
-                    self.player.Duration(), list(s.actions)
-                )
+                # Use effective range so the heatmap aligns with the
+                # progress bar (selected track or full timeline).
+                eff = self.player_controls._effective_range()
+                if eff is not None:
+                    bar_start, bar_end, _ = eff
+                else:
+                    bar_start = 0.0
+                    bar_end   = self.player.Duration()
+                bar_dur = bar_end - bar_start
+                if bar_dur > 0:
+                    # Offset actions so they're relative to bar_start
+                    offset_ms = bar_start * 1000.0
+                    actions = [
+                        type(a)(at=a.at - int(offset_ms), pos=a.pos)
+                        for a in s.actions
+                        if bar_start <= a.at / 1000.0 <= bar_end
+                    ]
+                    self.player_controls.UpdateHeatmap(bar_dur, actions)

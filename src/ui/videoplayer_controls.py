@@ -98,7 +98,7 @@ class OFS_VideoplayerControls:
         """Return (start, end, current) for the progress bar.
 
         * If a track is selected → (track.offset, track.end, transport_pos)
-        * Else if timeline_mgr → (0, timeline.duration, transport_pos)
+        * Else if timeline_mgr → (earliest_track_start, latest_track_end, transport_pos)
         * Fallback → (0, player.Duration(), player.CurrentTime())
         """
         mgr = self._timeline_mgr
@@ -111,10 +111,13 @@ class OFS_VideoplayerControls:
                 if result:
                     _lay, trk = result
                     return (trk.offset, trk.end, pos)
-            # No track selected → full timeline range
-            tl_dur = tl.duration
-            if tl_dur > 0:
-                return (0.0, tl_dur, pos)
+            # No track selected → span from earliest track start to latest track end
+            all_tracks = tl.AllTracks()
+            if all_tracks:
+                t_min = min(t.offset for _l, t in all_tracks)
+                t_max = max(t.end    for _l, t in all_tracks)
+                if t_max > t_min:
+                    return (t_min, t_max, pos)
         return None  # caller will fallback to player
 
     # ──────────────────────────────────────────────────────────────────────

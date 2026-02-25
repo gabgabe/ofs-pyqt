@@ -19,6 +19,7 @@ from imgui_bundle import imgui, ImVec2
 
 from src.core.video_player import OFS_Videoplayer
 from src.core.project      import OFS_Project
+from src.core.timeline_manager import TimelineManager
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ class MetadataEditorWindow:
         player:  OFS_Videoplayer,
         project: OFS_Project,
         visible: bool,
+        timeline_mgr: "TimelineManager | None" = None,
     ) -> bool:
         """Returns updated visible flag."""
         if not visible:
@@ -63,7 +65,7 @@ class MetadataEditorWindow:
             imgui.WindowFlags_.always_auto_resize,
         )
         if opened:
-            self._draw(project, player)
+            self._draw(project, player, timeline_mgr)
             imgui.end_popup()
 
         if not still_open:
@@ -73,7 +75,8 @@ class MetadataEditorWindow:
 
     # ──────────────────────────────────────────────────────────────────────
 
-    def _draw(self, project: OFS_Project, player: OFS_Videoplayer) -> None:
+    def _draw(self, project: OFS_Project, player: OFS_Videoplayer,
+              timeline_mgr: "TimelineManager | None" = None) -> None:
         if not project.is_valid:
             imgui.text_disabled("No project loaded")
             imgui.spacing()
@@ -120,8 +123,28 @@ class MetadataEditorWindow:
 
         imgui.separator()
 
-        # ── Duration (read-only) ───────────────────────────────────────
-        if player.VideoLoaded():
+        # ── Per-track video metadata (read-only) ───────────────────────
+        vtracks = []
+        if timeline_mgr:
+            vtracks = timeline_mgr.timeline.VideoTracks()
+        if vtracks:
+            imgui.text("Video tracks")
+            for _lay, vt in vtracks:
+                vd = vt.video_data
+                if not vd:
+                    continue
+                dur = vd.media_duration
+                h = int(dur) // 3600
+                m = (int(dur) % 3600) // 60
+                s = dur % 60
+                dur_str = (f"{h:02d}:{m:02d}:{s:05.2f}" if h
+                           else f"{m:02d}:{s:05.2f}")
+                res_str = f"{vd.width}×{vd.height}" if vd.width else "?"
+                fps_str = f"{vd.fps:.2f}" if vd.fps else "?"
+                imgui.bullet_text(
+                    f"{vt.name}  —  {dur_str}  {res_str}  {fps_str} fps"
+                )
+        elif player.VideoLoaded():
             dur = player.Duration()
             h = int(dur) // 3600
             m = (int(dur) % 3600) // 60
