@@ -153,9 +153,13 @@ class OFS_KeybindingSystem:
         Call once per frame. Sets ``self.any_key_active = True`` if any binding fired.
         """
         self.any_key_active = False
-        # Don't fire bindings when a text input widget has focus
-        if imgui.get_io().want_capture_keyboard:
-            # Allow some bindings even when text is focused? OFS doesn't.
+        # Don't fire bindings when a text input widget actually has focus.
+        # ``want_capture_keyboard`` alone is not reliable — ImGui can leave
+        # it True even after the user clicks away from an input widget
+        # (the nav system keeps the last-focused window's state).  We
+        # combine it with ``is_any_item_active()`` which is True only when
+        # an actual input widget (InputText, InputInt, etc.) holds focus.
+        if imgui.get_io().want_capture_keyboard and imgui.is_any_item_active():
             return
 
         for binding in self._bindings.values():

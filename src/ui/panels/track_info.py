@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 from typing import Optional, TYPE_CHECKING
 
-from imgui_bundle import imgui, ImVec2
+from imgui_bundle import imgui, ImVec2, ImVec4
 
 from src.core.events import EV, OFS_Events
 from src.core.timeline import Track, TrackType
@@ -34,6 +34,22 @@ if TYPE_CHECKING:
     from src.core.timeline_manager import TimelineManager
 
 log = logging.getLogger(__name__)
+
+# Colour palette — same swatches as the Add Track wizard
+_TRACK_PALETTE = [
+    (0.55, 0.27, 0.68, 1.0),  # purple
+    (0.27, 0.55, 0.68, 1.0),  # teal
+    (0.68, 0.55, 0.27, 1.0),  # amber
+    (0.27, 0.68, 0.40, 1.0),  # green
+    (0.68, 0.27, 0.40, 1.0),  # rose
+    (0.40, 0.68, 0.27, 1.0),  # lime
+    (0.85, 0.35, 0.20, 1.0),  # orange
+    (0.20, 0.40, 0.85, 1.0),  # blue
+    (0.85, 0.20, 0.55, 1.0),  # magenta
+    (0.20, 0.75, 0.75, 1.0),  # cyan
+    (0.90, 0.75, 0.15, 1.0),  # gold
+    (0.50, 0.50, 0.50, 1.0),  # grey
+]
 
 
 def _fmt_mmss(t: float) -> str:
@@ -233,10 +249,55 @@ class TrackInfoWindow:
         imgui.text("Colour")
         imgui.same_line(100)
         r, g, b, a = trk.color[:4]
-        ch, (r, g, b) = imgui.color_edit3("##trk_col", (r, g, b))
-        if ch:
-            trk.color = (r, g, b, a)
-            changed = True
+
+        # Colour button — clicking opens a popup with picker + palette
+        if imgui.color_button("##trk_col_btn", ImVec4(r, g, b, 1.0),
+                              imgui.ColorEditFlags_.no_tooltip, ImVec2(26, 26)):
+            imgui.open_popup("##trk_color_popup")
+
+        if imgui.begin_popup("##trk_color_popup"):
+            # Colour picker
+            ch, (r, g, b) = imgui.color_picker3(
+                "##trk_picker", (r, g, b),
+                imgui.ColorEditFlags_.no_side_preview
+                | imgui.ColorEditFlags_.no_small_preview)
+            if ch:
+                trk.color = (r, g, b, a)
+                changed = True
+
+            # ── Palette swatches inside the popup ──────────────────────
+            imgui.spacing()
+            imgui.separator()
+            imgui.text("Palette")
+            COLS_PER_ROW = 6
+            for i, c in enumerate(_TRACK_PALETTE):
+                if i % COLS_PER_ROW != 0:
+                    imgui.same_line()
+                pr, pg, pb, pa = c
+                is_match = (abs(r - pr) < 0.02 and abs(g - pg) < 0.02
+                            and abs(b - pb) < 0.02)
+                if is_match:
+                    imgui.push_style_color(imgui.Col_.button, ImVec4(pr, pg, pb, pa))
+                    imgui.push_style_color(imgui.Col_.button_hovered, ImVec4(pr, pg, pb, pa))
+                    imgui.push_style_color(imgui.Col_.button_active, ImVec4(pr, pg, pb, pa))
+                    imgui.push_style_color(imgui.Col_.border, ImVec4(1.0, 1.0, 1.0, 1.0))
+                    imgui.push_style_var(imgui.StyleVar_.frame_border_size, 2.0)
+                else:
+                    imgui.push_style_color(imgui.Col_.button, ImVec4(pr, pg, pb, pa))
+                    imgui.push_style_color(imgui.Col_.button_hovered,
+                                           ImVec4(min(1, pr + 0.15), min(1, pg + 0.15),
+                                                  min(1, pb + 0.15), pa))
+                    imgui.push_style_color(imgui.Col_.button_active, ImVec4(pr, pg, pb, pa))
+                if imgui.button(f"##ti_pal{i}", ImVec2(28, 28)):
+                    trk.color = (pr, pg, pb, a)
+                    r, g, b = pr, pg, pb
+                    changed = True
+                if is_match:
+                    imgui.pop_style_var()
+                    imgui.pop_style_color(4)
+                else:
+                    imgui.pop_style_color(3)
+            imgui.end_popup()
 
         if changed:
             EV.dispatch(OFS_Events.TIMELINE_LAYOUT_CHANGED)

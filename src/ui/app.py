@@ -68,7 +68,8 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
 
     def __init__(self) -> None:
         # Core systems
-        self.player       = OFS_Videoplayer()
+        self.player       = OFS_Videoplayer()  # primary (legacy) player
+        self._video_players: dict = {}  # track_id → OFS_Videoplayer (player pool)
         self.project      = OFS_Project()
         self.undo_system  = UndoSystem()
         self.keys         = OFS_KeybindingSystem(
@@ -357,9 +358,17 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         self.timeline_mgr.SetPlayer(self.player)
         self.timeline_mgr.SetProject(self.project)
 
+        # Wire ScriptingMode's FPS override + step_size into transport-level stepping.
+        def _scripting_fps_info():
+            sc = self.scripting
+            fps_ov = sc._frame_fps_value if sc._frame_fps_override else None
+            return (fps_ov, sc._step_size)
+        self.timeline_mgr.SetScriptingFpsGetter(_scripting_fps_info)
+
         # Wire transport into player controls so play/pause/seek/speed
         # go through the transport instead of calling the player directly.
         self.player_controls.SetTimelineManager(self.timeline_mgr)
+        self.chapter_mgr._timeline_mgr = self.timeline_mgr
 
         # Faster key-repeat: default ImGui settings (delay=0.275s, rate=0.050s)
         # feel sluggish for frame-by-frame stepping and action moving.
@@ -417,9 +426,23 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
     def _pre_new_frame(self) -> None:
         """Called every frame before imgui.new_frame()."""
         delta = imgui.get_io().delta_time
-        self.player.Update(delta)
-        self.timeline_mgr.Tick()
-        idle = not (self.player.VideoLoaded() and not self.player.IsPaused())
+
+        # Update ALL video players in the pool (render pending mpv frames)
+        for p in self._video_players.values():
+            p.Update(delta)
+        # Fallback: if primary player is not in pool, still update it
+        if self.player not in self._video_players.values():
+            self.player.Update(delta)
+
+        try:
+            self.timeline_mgr.Tick()
+        except Exception as exc:
+            log.error(f"TimelineManager.Tick() error: {exc}")
+
+        # Idle detection: any player playing → not idle
+        any_playing = self.timeline_mgr.AnyPlayerPlaying() or (
+            self.player.VideoLoaded() and not self.player.IsPaused())
+        idle = not any_playing
         self.project.update(delta, idle)
         EV.process()
         self.keys.ProcessKeybindings()
@@ -429,8 +452,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
             self._last_key_activity = time.monotonic()
         try:
             rp = hello_imgui.get_runner_params()
-            playing  = self.timeline_mgr.IsPlaying() or (
-                self.player.VideoLoaded() and not self.player.IsPaused())
+            playing  = self.timeline_mgr.IsPlaying() or any_playing
             key_held = (time.monotonic() - self._last_key_activity) < 0.25
             rp.fps_idling.enable_idling = not playing and not key_held
         except Exception:
@@ -520,7 +542,11 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
 
     def _after_swap(self) -> None:
         """Called after SDL_GL_SwapWindow."""
-        self.player.NotifySwap()
+        # Notify ALL players about the buffer swap
+        for p in self._video_players.values():
+            p.NotifySwap()
+        if self.player not in self._video_players.values():
+            self.player.NotifySwap()
 
     def _before_exit(self) -> None:
         self.Shutdown()
@@ -538,6 +564,9 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         self.keys.Save(kb_path)
         self.web_api.Stop()
         self.thumbnail_mgr.Shutdown()
+        # Shutdown all pool players (including primary if registered)
+        self._destroy_all_pool_players()
+        # Always shutdown the primary player too (in case it wasn't in the pool)
         self.player.Shutdown()
 
     # ──────────────────────────────────────────────────────────────────────
@@ -554,6 +583,77 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         EV.listen(OFS_Events.TIMELINE_TRACK_SELECTED, self._on_track_selected)
         EV.listen(OFS_Events.TIMELINE_TRACK_DESELECTED, self._on_track_deselected)
         EV.listen(OFS_Events.TIMELINE_ADD_AXIS_REQUEST, self._on_add_axis_request)
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Video player pool management
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _create_player_for_track(self, track_id: str, media_path: str) -> Optional[OFS_Videoplayer]:
+        """Create, init, and register a new video player for a track.
+
+        Returns the player, or None if init failed.
+        Requires a current GL context (call from main thread only).
+        """
+        player = OFS_Videoplayer()
+        hw_accel = self.preferences.force_hw_decoding
+        if not player.Init(hw_accel):
+            log.error(f"Failed to init video player for track {track_id}")
+            return None
+
+        # Wire callbacks with closures that include the track_id
+        def _on_loaded(path, _tid=track_id):
+            self._on_video_loaded_for_track(_tid, path)
+        def _on_dur(dur, _tid=track_id):
+            self._on_duration_change_for_track(_tid, dur)
+
+        player.on_video_loaded    = _on_loaded
+        player.on_duration_change = _on_dur
+        player.on_time_change     = self._on_time_change
+        player.on_pause_change    = self._on_pause_change
+
+        # Register in pool
+        self._video_players[track_id] = player
+        self.timeline_mgr.RegisterPlayer(track_id, player)
+
+        if media_path and os.path.exists(media_path):
+            player.OpenVideo(media_path)
+
+        log.info(f"Created player for track {track_id}: {media_path}")
+        return player
+
+    def _destroy_player_for_track(self, track_id: str) -> None:
+        """Shutdown and unregister a player for a track."""
+        player = self._video_players.pop(track_id, None)
+        self.timeline_mgr.UnregisterPlayer(track_id)
+        if player:
+            player.Shutdown()
+            log.info(f"Destroyed player for track {track_id}")
+
+    def _destroy_all_pool_players(self) -> None:
+        """Shutdown all players in the pool."""
+        for tid in list(self._video_players.keys()):
+            self._destroy_player_for_track(tid)
+
+    def _on_video_loaded_for_track(self, track_id: str, path: str) -> None:
+        """Callback when a pooled player finishes loading its video."""
+        log.info(f"Video loaded for track {track_id}: {path}")
+        self.status |= OFS_Status.GRADIENT_NEEDS_UPDATE
+        self.timeline_mgr.AddOrUpdateVideoTrack(track_id)
+        # Waveform + thumbnails: use the primary (first) video
+        vtracks = self.timeline_mgr.timeline.VideoTracks()
+        if vtracks and vtracks[0][1].id == track_id:
+            self.waveform.clear()
+            if self.preferences.show_waveform:
+                self.waveform.load_async(path)
+            self.thumbnail_mgr.SetVideo(path)
+        self.web_api.BroadcastMediaChange(path)
+        self.web_api.BroadcastProjectChange()
+
+    def _on_duration_change_for_track(self, track_id: str, duration: float) -> None:
+        """Callback when a pooled player reports its duration."""
+        self.status |= OFS_Status.GRADIENT_NEEDS_UPDATE
+        self.timeline_mgr.AddOrUpdateVideoTrack(track_id)
+        self.web_api.BroadcastDurationChange(duration)
 
     # ──────────────────────────────────────────────────────────────────────
     # Timeline action handlers  (mirrors OFS ScriptTimelineAction* handlers)
@@ -623,11 +723,16 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         self._add_axis_funscript(axis)
 
     def _on_video_loaded(self, path: str) -> None:
-        log.info(f"Video loaded: {path}")
+        """Primary player loaded a video. Find which track it belongs to and delegate."""
+        log.info(f"Video loaded (primary): {path}")
+        # Find the track_id that the primary player was registered for
+        for tid, p in self._video_players.items():
+            if p is self.player:
+                self._on_video_loaded_for_track(tid, path)
+                return
+        # Legacy fallback — no pool registration
         self.status |= OFS_Status.GRADIENT_NEEDS_UPDATE
-        # Update video track in the DAW timeline now that duration/fps are known
         self.timeline_mgr.AddOrUpdateVideoTrack()
-        # Kick off background waveform extraction
         self.waveform.clear()
         if self.preferences.show_waveform:
             self.waveform.load_async(path)
@@ -636,12 +741,14 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         self.web_api.BroadcastProjectChange()
 
     def _on_duration_change(self, duration: float) -> None:
+        """Primary player reported duration. Find track and delegate."""
+        for tid, p in self._video_players.items():
+            if p is self.player:
+                self._on_duration_change_for_track(tid, duration)
+                return
+        # Legacy fallback
         self.status |= OFS_Status.GRADIENT_NEEDS_UPDATE
         self.web_api.BroadcastDurationChange(duration)
-        # Update the video track in the DAW timeline now that the real
-        # duration is known (mpv may report it after file-loaded).
-        # Per-track metadata (fps, resolution, duration) is written inside
-        # AddOrUpdateVideoTrack rather than on every funscript globally.
         self.timeline_mgr.AddOrUpdateVideoTrack()
 
     def _on_time_change(self, time_s: float) -> None:
@@ -750,15 +857,48 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
                     self._alert("Failed to open", self.project.errors)
 
     def _init_project(self) -> None:
+        # Destroy any existing pool players before rebuilding
+        self._destroy_all_pool_players()
+
         # Build timeline BEFORE opening video so the Video layer already
         # exists when _on_video_loaded fires (prevents duplicate tracks).
         self.timeline_mgr.SetProject(self.project)
         self.timeline_mgr.BuildFromProject()
-        media = self.project.media_path
-        if media and os.path.exists(media):
-            self.player.OpenVideo(media)
-        # Auto-select the Video track in Track Info panel
+
+        # Create a player for every video track that has a media_path.
+        # The first track reuses self.player (legacy primary); additional
+        # tracks get fresh player instances from the pool.
         vtracks = self.timeline_mgr.timeline.VideoTracks()
+        first_player_assigned = False
+        for _lay, vt in vtracks:
+            mpath = (vt.video_data.media_path if vt.video_data else "") or ""
+            if not first_player_assigned:
+                # Register the primary player for the first video track
+                self._video_players[vt.id] = self.player
+                self.timeline_mgr.RegisterPlayer(vt.id, self.player)
+                first_player_assigned = True
+                if mpath and os.path.exists(mpath):
+                    self.player.OpenVideo(mpath)
+                elif not mpath:
+                    # Empty placeholder track (new project) — no video to open
+                    pass
+                else:
+                    # Fallback: try legacy project.media_path for old .ofsp files
+                    media = self.project.media_path
+                    if media and os.path.exists(media):
+                        self.player.OpenVideo(media)
+            else:
+                # Additional video tracks get their own player
+                if mpath:
+                    self._create_player_for_track(vt.id, mpath)
+
+        # If no video tracks at all, still register primary for fallback
+        if not first_player_assigned:
+            media = self.project.media_path
+            if media and os.path.exists(media):
+                self.player.OpenVideo(media)
+
+        # Auto-select the Video track in Track Info panel
         if vtracks:
             self.track_info.SelectTrack(vtracks[0][1].id)
         self._update_title()
@@ -803,6 +943,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
 
         # Close current
         self.project.reset()
+        self._destroy_all_pool_players()
         self.player.CloseVideo()
         from src.core.timeline import Timeline
         self.timeline_mgr.timeline = Timeline()
@@ -814,9 +955,10 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         if path not in self.recent_files:
             self.recent_files.append(path)
 
-        # Build empty timeline and update UI
+        # Build empty timeline — user adds video/funscript tracks manually
         self.timeline_mgr.SetProject(self.project)
         self.timeline_mgr.BuildFromProject()
+
         self._update_title()
         log.info(f"New empty project created: {path}")
 
@@ -857,25 +999,13 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
     def _do_close_project(self) -> None:
         """Actually close without any unsaved-edits guard."""
         self.project.reset()
+        # Destroy all pool players (additional tracks)
+        self._destroy_all_pool_players()
         self.player.CloseVideo()
         # Reset DAW timeline
         from src.core.timeline import Timeline
         self.timeline_mgr.timeline = Timeline()
         self._update_title()
-
-    def PickDifferentMedia(self) -> None:
-        """Open a file dialog to change the media file. Mirrors ``OpenFunscripter::pickDifferentMedia``."""
-        try:
-            from imgui_bundle import portable_file_dialogs as pfd
-            result = pfd.open_file(
-                "Pick media",
-                filters=["Media files", "*.mp4 *.mkv *.webm *.mov *.avi *"]
-            ).result()
-            if result:
-                self.project.set_media_path(result[0])
-                self.player.OpenVideo(result[0])
-        except Exception as exc:
-            log.warning(f"PickDifferentMedia: {exc}")
 
     def _update_title(self) -> None:
         title = "OpenFunscripter"
@@ -996,7 +1126,25 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
             new_path = str(mp.with_suffix("").parent /
                            (mp.stem + f".{axis}.funscript"))
         else:
-            return
+            # No legacy media_path — try per-track video media path
+            vtracks = self.timeline_mgr.timeline.VideoTracks()
+            vpath = ""
+            for _lay, vt in vtracks:
+                if vt.video_data and vt.video_data.media_path:
+                    vpath = vt.video_data.media_path
+                    break
+            if vpath:
+                mp = _P(vpath)
+                new_path = str(mp.with_suffix("").parent /
+                               (mp.stem + f".{axis}.funscript"))
+            elif self.project.path:
+                # Derive from project .ofsp path
+                pp = _P(self.project.path)
+                new_path = str(pp.with_suffix("").parent /
+                               (pp.stem + f".{axis}.funscript"))
+            else:
+                log.warning("Cannot add axis: no project path to derive filename")
+                return
         if self._is_script_already_loaded(new_path):
             return
         # Open wizard
@@ -1410,7 +1558,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
             track_type=TrackType.VIDEO,
             offset=offset,
             duration=placeholder_dur,
-            color=(100, 150, 220, 200),
+            color=(0.39, 0.59, 0.86, 0.78),   # 0-1 floats!
             trim_in=0.0,
             trim_out=placeholder_dur,
             media_duration=0.0,
@@ -1430,6 +1578,10 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
             layer.AddTrack(vtrack)
 
         log.info(f"Added media track '{name}' at offset={offset:.2f}s  path={path}")
+
+        # Create a player for this new video track
+        self._create_player_for_track(vtrack.id, path)
+
         self.status |= OFS_Status.GRADIENT_NEEDS_UPDATE
 
     def _import_funscript_to_timeline(self, path: str) -> None:

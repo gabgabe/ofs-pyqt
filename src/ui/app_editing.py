@@ -53,6 +53,41 @@ class EditingCommandsMixin:
             return global_t
         return self.player.CurrentTime()
 
+    def _select_end_time(self: "OpenFunscripter") -> float:
+        """End-of-content time for *Select all right* (funscript-local seconds).
+
+        Prefers the timeline duration (converted to the active track's local
+        frame) so it works for funscript-only projects where
+        ``player.Duration()`` returns a meaningless 1.0.
+        """
+        mgr = getattr(self, 'timeline_mgr', None)
+        if mgr is not None:
+            tl_dur = mgr.Duration()  # timeline.duration (max track end)
+            if tl_dur > 0:
+                trk = mgr.TrackForFunscript(self.project.active_idx)
+                if trk is not None:
+                    return trk.GlobalToLocal(tl_dur)
+                return tl_dur
+        # Also try the active funscript's own extent
+        s = self._active()
+        if s and s.actions:
+            return s.actions[-1].at / 1000.0
+        return self.player.Duration()
+
+    def _seek_to(self: "OpenFunscripter", local_t: float) -> None:
+        """Seek to *local_t* (funscript-local seconds).
+
+        Routes through the timeline transport so the cursor stays in sync
+        even on funscript-only projects where the video player is idle.
+        """
+        mgr = getattr(self, 'timeline_mgr', None)
+        if mgr is not None:
+            trk = mgr.TrackForFunscript(self.project.active_idx)
+            global_t = trk.LocalToGlobal(local_t) if trk else local_t
+            mgr.Seek(global_t)
+        else:
+            self.player.SetPositionExact(local_t)
+
     def AddEditAction(self: "OpenFunscripter", pos: int) -> None:
         """Insert or edit an action at the current time. Mirrors ``OpenFunscripter::AddEditAction``."""
         s = self._active()
@@ -107,7 +142,7 @@ class EditingCommandsMixin:
         for a in self.copied_selection:
             s.AddAction(FunscriptAction(a.at + int(offset), a.pos))
         last = self.copied_selection[-1]
-        self.player.SetPositionExact((last.at + int(offset)) / 1000.0)
+        self._seek_to((last.at + int(offset)) / 1000.0)
 
     def PasteExact(self: "OpenFunscripter") -> None:
         """Paste copied actions at their original timestamps. Mirrors ``OpenFunscripter::PasteExact``."""
@@ -188,7 +223,7 @@ class EditingCommandsMixin:
         start = len(stroke) - 2 if on_action else len(stroke) - 1
         for i in range(start, -1, -1):
             s.AddAction(FunscriptAction(stroke[i].at + int(offset), stroke[i].pos))
-        self.player.SetPositionExact((stroke[0].at + int(offset)) / 1000.0)
+        self._seek_to((stroke[0].at + int(offset)) / 1000.0)
 
     def _select_top_points(self: "OpenFunscripter") -> None:
         s = self._active()

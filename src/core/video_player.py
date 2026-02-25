@@ -158,6 +158,28 @@ class OFS_Videoplayer:
         self._last_pct_for_speed: float = 0.0   # percent_pos at last measurement
         self._last_pct_wall: float = 0.0         # wall time at last measurement
 
+        # Seek suppression: while True, Update() skips rendering so the
+        # texture keeps the pre-seek frame until the new position decodes.
+        self._seeking: bool = False
+        self._seek_target: float = 0.0  # target time for in-flight seek
+        self._seek_start_wall: float = 0.0  # monotonic time when seek started
+        self._seek_is_small: bool = False  # True for frame-steps: skip render suppression
+
+        # Seek confirmation loop (Omakase pattern: syncVideoFrames nudge)
+        # After a seek, we poll percent-pos.  If after _SEEK_CONFIRM_TIMEOUT
+        # the player hasn't arrived within half a frame of the target, we
+        # issue a small nudge seek to correct.
+        self._seek_confirm_pending: bool = False
+        self._seek_confirm_retries: int = 0
+        _SEEK_CONFIRM_TIMEOUT: float = 0.25   # seconds
+        _SEEK_CONFIRM_MAX_RETRIES: int = 2
+
+        # Buffering detection (Omakase pattern: expected-vs-actual stall)
+        self._is_buffering: bool = False
+        self._buffering_since: float = 0.0  # monotonic timestamp
+        self._last_progress_wall: float = 0.0  # last time percent-pos changed
+        self._last_progress_pct: float = 0.0
+
         # Render update signal — set from mpv callback thread, cleared by main thread
         # Mirrors OFS SDL_atomic_t renderUpdate
         self._render_pending: threading.Event = threading.Event()
@@ -193,6 +215,71 @@ class OFS_Videoplayer:
         try:
             # Keep video open at last frame when reaching EOF (don't close).
             self._mpv["keep-open"] = "yes"
+        except Exception:
+            pass
+
+        try:
+            # Use the demuxer cache to speed up seeks within already-buffered
+            # regions.  mpv can satisfy seeks instantly from its internal
+            # demuxer cache instead of re-reading from disk, dramatically
+            # reducing the latency of short-range seeks (e.g. scrubbing,
+            # timeline click-to-seek).
+            self._mpv["demuxer-max-bytes"] = "300MiB"
+            self._mpv["demuxer-max-back-bytes"] = "150MiB"
+        except Exception:
+            pass
+
+        try:
+            # Allow mpv to use its demuxer cache for backward seeks.
+            # Without this, even a seek backwards by a few frames triggers
+            # a full demuxer re-open from disk / keyframe.
+            self._mpv["demuxer-seekable-cache"] = "yes"
+        except Exception:
+            pass
+
+        try:
+            # Enable the full stream cache in RAM.  Combined with the
+            # large demuxer-max-back-bytes this means backward seeks
+            # within the cached region are almost instant (no disk I/O,
+            # no keyframe decode-forward).
+            self._mpv["cache"] = "yes"
+            self._mpv["cache-secs"] = 120
+        except Exception:
+            pass
+
+        try:
+            # Use multiple threads for software video decoding.
+            # When hwdec falls back to software (e.g. unusual codecs),
+            # this lets ffmpeg parallelise across CPU cores.
+            self._mpv["vd-lavc-threads"] = 0   # 0 = auto-detect core count
+        except Exception:
+            pass
+
+        try:
+            # Limit the initial decode-ahead when seeking.  A shorter
+            # look-ahead means the first frame appears sooner after a seek.
+            self._mpv["video-latency-hacks"] = "yes"
+        except Exception:
+            pass
+
+        try:
+            # 'hr-seek=yes' is implicit with "absolute+exact", but setting
+            # hr-seek-demuxer-offset to a negative value makes mpv start
+            # reading the demuxer stream from *before* the target.  This
+            # pre-populates the backward demuxer cache with ~2 s of decoded
+            # frames, so subsequent backward frame-steps are cache hits
+            # instead of triggering a full keyframe-decode-forward cycle.
+            self._mpv["hr-seek-demuxer-offset"] = -2.0
+        except Exception:
+            pass
+
+        try:
+            # Skip the H.264/H.265 in-loop deblocking filter during seeks.
+            # This saves ~30% decode time per frame during the
+            # keyframe-decode-forward cycle that every seek requires.
+            # The quality difference is negligible (slight blocking on the
+            # exact seek frame, invisible once the next frame renders).
+            self._mpv["vd-lavc-skiploopfilter"] = "nonkey"
         except Exception:
             pass
 
@@ -275,6 +362,41 @@ class OFS_Videoplayer:
                     self._last_pct_for_speed = new_pct
                     self._last_pct_wall = now
                 self._percent_pos = new_pct
+
+                # ── Buffering detection ──────────────────────────────
+                # Track progress: if position changes, we're not buffering.
+                if abs(new_pct - self._last_progress_pct) > 1e-6:
+                    self._last_progress_pct = new_pct
+                    self._last_progress_wall = now
+                    if self._is_buffering:
+                        self._is_buffering = False
+
+                # ── Seek confirmation ─────────────────────────────────
+                # Clear the seeking flag once mpv reports a position
+                # near the seek target — the new frame has been decoded.
+                if self._seeking:
+                    arrived_t = self._duration * new_pct
+                    half_frame = self.FrameTime() * 0.5
+                    if abs(arrived_t - self._seek_target) < max(half_frame, 0.05):
+                        # Arrived at the target frame.
+                        self._seeking = False
+                        self._seek_confirm_pending = False
+                        self._seek_confirm_retries = 0
+                    elif not self._paused:
+                        # Playing: fire-and-forget — clear immediately so
+                        # playback proceeds normally (no nudge loop).
+                        self._seeking = False
+                        self._seek_confirm_retries = 0
+                    elif (now - self._seek_start_wall > 0.25
+                          and self._seek_confirm_retries < 2):
+                        # Paused: nudge-seek to the exact target.
+                        self._seek_confirm_retries += 1
+                        self._seek_start_wall = now
+                        try:
+                            self._mpv.seek(self._seek_target, "absolute+exact")
+                        except Exception:
+                            self._seeking = False
+
                 if self.on_time_change:
                     self.on_time_change(self._duration * self._percent_pos)
 
@@ -402,14 +524,41 @@ class OFS_Videoplayer:
               if (flags & MPV_RENDER_UPDATE_FRAME) RenderFrameToTexture();
               SDL_AtomicDecRef(&renderUpdate);
           }
+
+        Also runs buffering detection (Omakase stall-detection pattern):
+        if the player is unpaused but percent-pos hasn't changed for >700 ms,
+        the player is considered buffering.
         """
         if self._render_ctx is None:
             return
+
+        # ── Buffering detection ───────────────────────────────────────
+        if not self._paused and self._video_loaded:
+            now = _time.monotonic()
+            if self._last_progress_wall > 0 and (now - self._last_progress_wall) > 0.7:
+                if not self._is_buffering:
+                    self._is_buffering = True
+                    self._buffering_since = now
+        else:
+            if self._is_buffering:
+                self._is_buffering = False
 
         # Fast-path: nothing pending (callback not fired since last frame)
         if not self._render_pending.is_set():
             return
         self._render_pending.clear()
+
+        # While a seek is in flight AND the player is paused, suppress
+        # rendering so the texture keeps the pre-seek frame until the new
+        # position is decoded (prevents flash of intermediate keyframe).
+        # EXCEPTION: small seeks (frame-steps, scrubbing) always render
+        # immediately — the visual cost of one wrong keyframe flash is
+        # much less than the latency of a frozen texture.
+        if self._seeking and self._paused and not self._seek_is_small:
+            if _time.monotonic() - self._seek_start_wall > 0.8:
+                self._seeking = False
+            else:
+                return
 
         # Drain all frames mpv has queued (cap at 8 to avoid infinite loop)
         for _ in range(8):
@@ -466,9 +615,15 @@ class OFS_Videoplayer:
             pass
 
     def SetPaused(self, paused: bool) -> None:
-        """Pause or resume playback. Mirrors ``OFS_Videoplayer::SetPaused``."""
+        """Pause or resume playback. Mirrors ``OFS_Videoplayer::SetPaused``.
+
+        Like the C++ original, the local cache is updated **immediately** so
+        that ``IsPaused()`` reflects the new state without waiting for the
+        asynchronous mpv property-change observer.
+        """
         if not self._mpv:
             return
+        self._paused = paused          # update cache first (OFS pattern)
         try:
             self._mpv["pause"] = paused
         except Exception:
@@ -482,25 +637,36 @@ class OFS_Videoplayer:
         """Seek to an absolute time in seconds. Mirrors ``OFS_Videoplayer::SetPositionExact``."""
         if not self._mpv:
             return
+        # Classify as small seek (frame-step / scrub) vs large jump.
+        # Small seeks skip render suppression so the frame updates instantly.
+        old_pos = self._logical_pos
         self._logical_pos = time_s
+        self._seeking = True
+        self._seek_target = time_s
+        self._seek_start_wall = _time.monotonic()
+        self._seek_is_small = abs(time_s - old_pos) < 2.0
         if pauses:
             self.SetPaused(True)
         try:
             self._mpv.seek(time_s, "absolute+exact")
         except Exception:
-            pass
+            self._seeking = False
 
     def SetPositionPercent(self, pct: float, pauses: bool = False) -> None:
         """Seek to a normalised position (0–1). Mirrors ``OFS_Videoplayer::SetPositionPercent``."""
         if not self._mpv:
             return
         self._logical_pos = pct * self._duration
+        self._seeking = True
+        self._seek_target = self._logical_pos
+        self._seek_start_wall = _time.monotonic()
+        self._seek_is_small = False  # percent-seek = large jump
         if pauses:
             self.SetPaused(True)
         try:
             self._mpv.seek(pct * 100.0, "absolute-percent+exact")
         except Exception:
-            pass
+            self._seeking = False
 
     def SeekRelative(self, delta_s: float) -> None:
         """Seek forward or backward by *delta_s* seconds. Mirrors ``OFS_Videoplayer::SeekRelative``."""
@@ -515,20 +681,25 @@ class OFS_Videoplayer:
         """Step forward or backward by *offset* video frames. Mirrors ``OFS_Videoplayer::SeekFrames``."""
         if not self._mpv:
             return
-        # Rate-limit: don't flood mpv's command queue faster than a single
-        # frame time.  This only throttles individual SeekFrames calls —
-        # the keybinding system already handles repeat timing.
         now = _time.monotonic()
-        min_interval = self.FrameTime() * 0.5
-        if now - self._last_seek_time < min_interval:
-            return
         self._last_seek_time = now
+        # Mark as seeking so external controllers (Tick, SyncFromPlayer)
+        # know not to re-seek or overwrite the transport position while
+        # mpv is processing the frame step.
+        self._seeking = True
+        self._seek_start_wall = now
+        self._seek_is_small = True  # frame-step = always small
+        # Set _seek_target to the expected position after stepping so that
+        # the percent-pos observer can properly clear _seeking when the
+        # new frame arrives (without this, _seek_target is stale and the
+        # arrival check always fails, leaving _seeking stuck for 0.8 s).
+        self._seek_target = self.CurrentTime() + offset * self.FrameTime()
         try:
             cmd = "frame-step" if offset > 0 else "frame-back-step"
             for _ in range(abs(offset)):
                 self._mpv.command(cmd)
         except Exception:
-            pass
+            self._seeking = False
 
     def NextFrame(self) -> None:
         """Advance one video frame. Mirrors ``OFS_Videoplayer::NextFrame``."""
@@ -604,8 +775,26 @@ class OFS_Videoplayer:
         return self._video_loaded
 
     def IsPaused(self) -> bool:
-        """True if playback is paused. Mirrors ``MpvDataCache::paused``."""
+        """True if playback is paused. Mirrors ``MpvDataCache::paused``.
+
+        Also returns True when the player is mid-frame-step (``_seeking``
+        after :meth:`SeekFrames`).  mpv's ``frame-step`` / ``frame-back-step``
+        commands internally unpause the player for one decode cycle,
+        which flickers ``_paused`` to ``False``.  Without this guard the
+        keybinding system's ``if player.IsPaused()`` check rejects the
+        next arrow key-press and frame-stepping appears broken.
+        """
+        if self._seeking:
+            return True
         return self._paused
+
+    def IsBuffering(self) -> bool:
+        """True if the player appears stalled (no position progress for >700 ms).
+
+        Omakase pattern: detect buffering by comparing expected vs actual
+        position advancement.
+        """
+        return self._is_buffering
 
     def Duration(self) -> float:
         """Total duration in seconds. Mirrors ``MpvDataCache::duration``."""

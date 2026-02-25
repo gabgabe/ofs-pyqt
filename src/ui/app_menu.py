@@ -97,9 +97,6 @@ class MenuBarMixin:
             _, self.show_project_editor = imgui.menu_item(
                 "Configure", "", self.show_project_editor)
             imgui.separator()
-            if imgui.menu_item("Pick different media", "", False)[0]:
-                self.PickDifferentMedia()
-            imgui.separator()
             # ── Add submenu ──────────────────────────────────
             if imgui.begin_menu("Add"):
                 if imgui.menu_item("Add media...", "", False)[0]:
@@ -163,7 +160,7 @@ class MenuBarMixin:
             if imgui.menu_item("Select all left",  "Ctrl+Alt+Left", False)[0]:
                 if s: s.SelectTime(0, self._funscript_time())
             if imgui.menu_item("Select all right", "Ctrl+Alt+Right", False)[0]:
-                if s: s.SelectTime(self._funscript_time(), self.player.Duration())
+                if s: s.SelectTime(self._funscript_time(), self._select_end_time())
             imgui.separator()
             if imgui.menu_item("Top points only",    "", False, has_sel)[0]: self._select_top_points()
             if imgui.menu_item("Middle points only", "", False, has_sel)[0]: self._select_middle_points()
@@ -229,7 +226,10 @@ class MenuBarMixin:
                     bar_start, bar_end, _ = eff
                 else:
                     bar_start = 0.0
-                    bar_end   = self.player.Duration()
+                    # Prefer timeline duration over player.Duration() so
+                    # funscript-only projects get a meaningful range.
+                    tl_dur = self.timeline_mgr.Duration() if hasattr(self, 'timeline_mgr') else 0.0
+                    bar_end = tl_dur if tl_dur > 0 else self.player.Duration()
                 bar_dur = bar_end - bar_start
                 if bar_dur > 0:
                     # Offset actions so they're relative to bar_start

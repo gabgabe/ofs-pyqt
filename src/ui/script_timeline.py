@@ -191,12 +191,27 @@ class ScriptTimeline:
         # Snap: when dragging, snap track edges to nearby track edges
         self.snap_tracks: bool = True
         self._daw_snap_threshold_px: float = 10.0  # snap within this many pixels
+        # Rename layer state
+        self._daw_rename_layer_id: Optional[str] = None
+        self._daw_rename_buf: str = ""
         # Shift+drag rectangular selection in DAW mode
         self._daw_selecting: bool = False
         self._daw_sel_start_mx: float = 0.0
         self._daw_sel_start_my: float = 0.0
         self._daw_sel_track_id: Optional[str] = None
         self._daw_sel_layer_idx: int = -1
+
+        # ── Playhead drag-seek (Omakase pattern #6) ──────────────────────
+        self._playhead_dragging: bool = False
+        self._playhead_drag_was_playing: bool = False
+
+        # ── Description pane toggle (Omakase pattern #9) ─────────────────
+        self.show_labels: bool = True          # toggle layer label column
+        self._label_w_anim: float = DAW_LABEL_W  # animated label width
+
+        # ── Lane minimize/maximize constants ─────────────────────────────
+        self._MIN_LAYER_H: float = 16.0        # minimized height (thin bar)
+        self._ANIM_SPEED: float = 12.0         # lerp speed per second
 
     # ──────────────────────────────────────────────────────────────────────
 
@@ -1062,16 +1077,29 @@ class ScriptTimeline:
         self._win_size = avail
 
         # ── Layout dimensions ──────────────────────────────────────────────
-        label_w  = 0.0
+        # Animated label column width (description pane toggle)
+        target_lw = DAW_LABEL_W if self.show_labels else 0.0
+        dt_anim = io.delta_time if hasattr(io, 'delta_time') else 1.0 / 60.0
+        self._label_w_anim += (target_lw - self._label_w_anim) * min(1.0, self._ANIM_SPEED * dt_anim)
+        if abs(self._label_w_anim - target_lw) < 0.5:
+            self._label_w_anim = target_lw
+        label_w  = self._label_w_anim
+
         ruler_h  = DAW_RULER_H
         body_x   = win_pos.x + label_w
         body_w   = max(1.0, avail.x - label_w)
         body_y   = win_pos.y + ruler_h
         body_h   = max(1.0, avail.y - ruler_h)
 
+        # ── Animate layer heights (lane minimize/maximize) ────────────────
         n_layers = max(1, len(tl.layers))
-        layer_h  = max(DAW_MIN_LAYER_H, body_h / n_layers)
-        total_layers_h = layer_h * n_layers
+        for layer in tl.layers:
+            target_h = self._MIN_LAYER_H if layer.minimized else max(DAW_MIN_LAYER_H, body_h / n_layers)
+            layer._anim_height += (target_h - layer._anim_height) * min(1.0, self._ANIM_SPEED * dt_anim)
+            if abs(layer._anim_height - target_h) < 0.5:
+                layer._anim_height = target_h
+
+        total_layers_h = sum(l._anim_height for l in tl.layers) if tl.layers else body_h
         # Clamp vertical scroll
         max_v_scroll = max(0.0, total_layers_h - body_h)
         self._daw_v_scroll = max(0.0, min(self._daw_v_scroll, max_v_scroll))
@@ -1111,6 +1139,13 @@ class ScriptTimeline:
             COL_DAW_BG,
         )
 
+        # ── Label column header (top-left corner) ──────────────────────────
+        if label_w > 0:
+            dl.add_rect_filled(
+                ImVec2(win_pos.x, win_pos.y),
+                ImVec2(win_pos.x + label_w, win_pos.y + ruler_h),
+                COL_DAW_LABEL_BG)
+
         # ── Ruler (top time bar) ───────────────────────────────────────────
         self._draw_daw_ruler(dl, body_x, win_pos.y, body_w, ruler_h, t_start, t_end)
 
@@ -1122,11 +1157,16 @@ class ScriptTimeline:
         )
 
         # ── Layer rows + tracks ────────────────────────────────────────────
+        cum_y = 0.0   # cumulative Y offset for animated layer heights
+        self._layer_y_offsets = []  # cache for interaction handler
         for layer_slot, layer in enumerate(tl.layers):
-            ly = body_y + layer_slot * layer_h - v_off
+            layer_h = layer._anim_height
+            ly = body_y + cum_y - v_off
+            self._layer_y_offsets.append((ly, layer_h))
 
             # Skip layers fully off-screen
             if ly + layer_h < body_y or ly > body_y + body_h:
+                cum_y += layer_h
                 continue
 
             # Alternating row background
@@ -1139,11 +1179,27 @@ class ScriptTimeline:
                 COL_DAW_LAYER_BORDER, 1.0)
 
             # ── Draw each track (clip rectangle + content) ─────────────────
-            for trk in layer.tracks:
-                self._draw_daw_clip(
-                    dl, trk, layer, scripts, active_idx,
-                    body_x, ly, body_w, layer_h, t_start, t_end,
-                )
+            if not layer.minimized:
+                for trk in layer.tracks:
+                    self._draw_daw_clip(
+                        dl, trk, layer, scripts, active_idx,
+                        body_x, ly, body_w, layer_h, t_start, t_end,
+                    )
+            else:
+                # Minimized: just show thin colored bars for each track
+                for trk in layer.tracks:
+                    visible_dur = t_end - t_start
+                    if visible_dur <= 0:
+                        continue
+                    cx1 = body_x + (trk.offset - t_start) / visible_dur * body_w
+                    cx2 = body_x + (trk.end - t_start) / visible_dur * body_w
+                    cx1c = max(body_x, cx1)
+                    cx2c = min(body_x + body_w, cx2)
+                    if cx2c > cx1c:
+                        r, g, b, a = trk.color[:4]
+                        dl.add_rect_filled(
+                            ImVec2(cx1c, ly + 2), ImVec2(cx2c, ly + layer_h - 2),
+                            _col32(r, g, b, a * 0.7), 2.0)
 
             # ── Muted overlay ──────────────────────────────────────────────
             if layer.muted:
@@ -1153,9 +1209,34 @@ class ScriptTimeline:
                     COL_DAW_MUTED_OVERLAY,
                 )
 
-            # (layer label column removed — clip name shown inside clip rect)
+            # ── Locked overlay ─────────────────────────────────────────────
+            if layer.locked:
+                dl.add_rect_filled(
+                    ImVec2(body_x, ly),
+                    ImVec2(body_x + body_w, ly + layer_h),
+                    _col32(0.15, 0.12, 0.0, 0.25),
+                )
+
+            cum_y += layer_h
 
         dl.pop_clip_rect()
+
+        # ── Layer label column (drawn AFTER body clip-rect so it's on top) ─
+        if label_w > 1:
+            dl.push_clip_rect(
+                ImVec2(win_pos.x, body_y),
+                ImVec2(win_pos.x + label_w, body_y + body_h),
+                True,
+            )
+            for layer_slot, layer in enumerate(tl.layers):
+                if layer_slot < len(self._layer_y_offsets):
+                    ly, lh = self._layer_y_offsets[layer_slot]
+                else:
+                    continue
+                if ly + lh < body_y or ly > body_y + body_h:
+                    continue
+                self._draw_daw_layer_label(dl, layer, win_pos.x, ly, label_w, lh, layer_slot)
+            dl.pop_clip_rect()
 
         # ── Playhead / cursor ──────────────────────────────────────────────
         cx = self._time_to_x(cur_t, body_x, body_w, t_start, t_end)
@@ -1190,6 +1271,21 @@ class ScriptTimeline:
                 _col32(1.0, 1.0, 1.0, 0.25), 2.0,
             )
 
+        # ── Description pane toggle button (top-left corner) ──────────────
+        toggle_sz = ImVec2(14, 14)
+        toggle_x = win_pos.x + 2
+        toggle_y = win_pos.y + (ruler_h - toggle_sz.y) * 0.5
+        imgui.set_cursor_screen_pos(ImVec2(toggle_x, toggle_y))
+        toggle_icon = "\u25c0" if self.show_labels else "\u25b6"  # ◀ / ▶
+        imgui.push_style_color(imgui.Col_.button, _col32(0.25, 0.25, 0.25, 0.8))
+        imgui.push_style_color(imgui.Col_.button_hovered, _col32(0.4, 0.4, 0.4, 0.9))
+        imgui.push_style_color(imgui.Col_.button_active, _col32(0.3, 0.3, 0.3, 1.0))
+        if imgui.button(f"{toggle_icon}##label_toggle", toggle_sz):
+            self.show_labels = not self.show_labels
+        imgui.pop_style_color(3)
+        if imgui.is_item_hovered():
+            imgui.set_tooltip("Toggle layer labels  [Tab]")
+
         # ── Invisible interaction button ───────────────────────────────────
         imgui.set_cursor_screen_pos(win_pos)
         imgui.invisible_button(
@@ -1201,7 +1297,7 @@ class ScriptTimeline:
         self._handle_daw_interaction(
             player, scripts, active_idx, timeline_mgr,
             win_pos, avail, body_x, body_w, body_y, body_h,
-            ruler_h, layer_h, t_start, t_end,
+            ruler_h, 0.0, t_start, t_end,
         )
 
         # ── Right-click context menu ───────────────────────────────────────
@@ -1210,6 +1306,8 @@ class ScriptTimeline:
                 "Follow playback cursor", "", self.follow_cursor)
             _, self.snap_tracks = imgui.menu_item(
                 "Snap tracks", "", self.snap_tracks)
+            _, self.show_labels = imgui.menu_item(
+                "Show layer labels", "", self.show_labels)
             imgui.separator()
 
             # ── Add track submenu ──────────────────────────────────────────
@@ -1221,14 +1319,85 @@ class ScriptTimeline:
                 imgui.end_menu()
 
             if imgui.begin_menu("Layers"):
-                for layer in tl.layers:
-                    changed, val = imgui.menu_item(
-                        f"Mute: {layer.name}", "", layer.muted)
-                    if changed:
-                        layer.muted = val
-                        EV.dispatch(OFS_Events.TIMELINE_LAYER_MUTE,
-                                    layer_id=layer.id, muted=val)
+                # Add new layer
+                if imgui.menu_item("+ Add Layer", "", False)[0]:
+                    new_layer = tl.AddLayer(f"Layer {len(tl.layers) + 1}")
+                    EV.dispatch(OFS_Events.TIMELINE_LAYER_ADDED,
+                                layer_id=new_layer.id)
+                    EV.dispatch(OFS_Events.TIMELINE_LAYOUT_CHANGED)
+                imgui.separator()
+
+                for li, layer in enumerate(tl.layers):
+                    if imgui.begin_menu(f"{layer.name}##lmenu_{layer.id}"):
+                        # Minimize/Maximize
+                        min_label = "Maximize" if layer.minimized else "Minimize"
+                        if imgui.menu_item(min_label, "", False)[0]:
+                            layer.minimized = not layer.minimized
+                            EV.dispatch(OFS_Events.TIMELINE_LAYOUT_CHANGED)
+                        # Mute
+                        changed, val = imgui.menu_item(
+                            "Mute", "", layer.muted)
+                        if changed:
+                            layer.muted = val
+                            EV.dispatch(OFS_Events.TIMELINE_LAYER_MUTE,
+                                        layer_id=layer.id, muted=val)
+                        # Lock
+                        changed, val = imgui.menu_item(
+                            "Lock", "", layer.locked)
+                        if changed:
+                            layer.locked = val
+                            EV.dispatch(OFS_Events.TIMELINE_LAYOUT_CHANGED)
+                        imgui.separator()
+                        # Rename
+                        if imgui.menu_item("Rename...", "", False)[0]:
+                            self._daw_rename_layer_id = layer.id
+                            self._daw_rename_buf = layer.name
+                            imgui.open_popup("##rename_layer_popup")
+                        imgui.separator()
+                        # Move up / down
+                        if li > 0:
+                            if imgui.menu_item("Move Up", "", False)[0]:
+                                tl.MoveLayer(layer.id, li - 1)
+                                EV.dispatch(OFS_Events.TIMELINE_LAYOUT_CHANGED)
+                        if li < len(tl.layers) - 1:
+                            if imgui.menu_item("Move Down", "", False)[0]:
+                                tl.MoveLayer(layer.id, li + 1)
+                                EV.dispatch(OFS_Events.TIMELINE_LAYOUT_CHANGED)
+                        imgui.separator()
+                        # Remove (only if >0 tracks? allow always)
+                        if imgui.menu_item("Remove Layer", "", False)[0]:
+                            tl.RemoveLayer(layer.id)
+                            EV.dispatch(OFS_Events.TIMELINE_LAYER_REMOVED,
+                                        layer_id=layer.id)
+                            EV.dispatch(OFS_Events.TIMELINE_LAYOUT_CHANGED)
+                        imgui.end_menu()
                 imgui.end_menu()
+
+            # ── Rename layer popup ─────────────────────────────────────────
+            if imgui.begin_popup("##rename_layer_popup"):
+                imgui.text("Rename layer:")
+                imgui.set_next_item_width(160)
+                ch, self._daw_rename_buf = imgui.input_text(
+                    "##ren_lay", self._daw_rename_buf, 64,
+                    imgui.InputTextFlags_.enter_returns_true)
+                if ch:
+                    for lay in tl.layers:
+                        if lay.id == self._daw_rename_layer_id:
+                            lay.name = self._daw_rename_buf
+                            EV.dispatch(OFS_Events.TIMELINE_LAYER_RENAMED,
+                                        layer_id=lay.id, name=lay.name)
+                            break
+                    imgui.close_current_popup()
+                imgui.same_line()
+                if imgui.button("OK"):
+                    for lay in tl.layers:
+                        if lay.id == self._daw_rename_layer_id:
+                            lay.name = self._daw_rename_buf
+                            EV.dispatch(OFS_Events.TIMELINE_LAYER_RENAMED,
+                                        layer_id=lay.id, name=lay.name)
+                            break
+                    imgui.close_current_popup()
+                imgui.end_popup()
 
             if imgui.begin_menu("Rendering"):
                 _, self.show_action_lines  = imgui.menu_item(
@@ -1301,13 +1470,74 @@ class ScriptTimeline:
         dl.add_line(
             ImVec2(x + w, y), ImVec2(x + w, y + h),
             COL_DAW_LAYER_BORDER, 1.0)
-        # Layer name
-        name = layer.name[:12]
+        dl.add_line(
+            ImVec2(x, y + h), ImVec2(x + w, y + h),
+            COL_DAW_LAYER_BORDER, 1.0)
+
+        # Layer name (truncated to fit)
+        max_chars = max(4, int((w - 8) / 7))
+        name = layer.name[:max_chars]
         text_col = COL_DAW_LABEL_MUTED if layer.muted else COL_DAW_LABEL_TEXT
-        dl.add_text(ImVec2(x + 4, y + 3), text_col, name)
-        # Mute indicator
-        if layer.muted:
-            dl.add_text(ImVec2(x + 4, y + h - 16), COL_DAW_LABEL_MUTED, "M")
+
+        if layer.minimized:
+            # Minimized: just show name centred vertically in the thin bar
+            dl.add_text(ImVec2(x + 4, y + max(0, (h - 14) * 0.5)), text_col, name)
+        else:
+            dl.add_text(ImVec2(x + 4, y + 3), text_col, name)
+
+        # ── Minimize/maximize button ───────────────────────────────────────
+        min_btn_sz = ImVec2(14, 14)
+        min_btn_x = x + w - min_btn_sz.x - 3
+        min_btn_y = y + 2
+        imgui.set_cursor_screen_pos(ImVec2(min_btn_x, min_btn_y))
+        min_icon = "\u25b2" if not layer.minimized else "\u25bc"  # ▲ / ▼
+        imgui.push_style_color(imgui.Col_.button, _col32(0.2, 0.2, 0.2, 0.6))
+        imgui.push_style_color(imgui.Col_.button_hovered, _col32(0.4, 0.4, 0.4, 0.8))
+        imgui.push_style_color(imgui.Col_.button_active, _col32(0.3, 0.3, 0.3, 1.0))
+        imgui.push_style_color(imgui.Col_.text, _col32(0.8, 0.8, 0.8, 0.9))
+        if imgui.button(f"{min_icon}##min_{layer.id}", min_btn_sz):
+            layer.minimized = not layer.minimized
+            EV.dispatch(OFS_Events.TIMELINE_LAYOUT_CHANGED)
+        imgui.pop_style_color(4)
+        if imgui.is_item_hovered():
+            imgui.set_tooltip("Minimize" if not layer.minimized else "Maximize")
+
+        if layer.minimized:
+            return  # don't show M/L buttons when minimized
+
+        # ── Interactive buttons (Mute / Lock) — drawn via imgui widgets ────
+        btn_y = y + h - 22.0
+        btn_sz = ImVec2(18, 18)
+        imgui.set_cursor_screen_pos(ImVec2(x + 3, btn_y))
+
+        # Mute toggle
+        m_col = _col32(0.9, 0.35, 0.35, 1.0) if layer.muted else _col32(0.5, 0.5, 0.5, 0.7)
+        imgui.push_style_color(imgui.Col_.button, m_col)
+        imgui.push_style_color(imgui.Col_.button_hovered,
+                               _col32(0.9, 0.45, 0.45, 1.0) if layer.muted
+                               else _col32(0.65, 0.65, 0.65, 0.9))
+        imgui.push_style_color(imgui.Col_.button_active, m_col)
+        imgui.push_style_color(imgui.Col_.text, _col32(1, 1, 1, 1))
+        if imgui.button(f"M##lm_{layer.id}", btn_sz):
+            layer.muted = not layer.muted
+            EV.dispatch(OFS_Events.TIMELINE_LAYER_MUTE,
+                        layer_id=layer.id, muted=layer.muted)
+        imgui.pop_style_color(4)
+
+        imgui.same_line(0, 2)
+
+        # Lock toggle
+        l_col = _col32(0.85, 0.70, 0.20, 1.0) if layer.locked else _col32(0.5, 0.5, 0.5, 0.7)
+        imgui.push_style_color(imgui.Col_.button, l_col)
+        imgui.push_style_color(imgui.Col_.button_hovered,
+                               _col32(0.95, 0.80, 0.30, 1.0) if layer.locked
+                               else _col32(0.65, 0.65, 0.65, 0.9))
+        imgui.push_style_color(imgui.Col_.button_active, l_col)
+        imgui.push_style_color(imgui.Col_.text, _col32(1, 1, 1, 1))
+        if imgui.button(f"L##ll_{layer.id}", btn_sz):
+            layer.locked = not layer.locked
+            EV.dispatch(OFS_Events.TIMELINE_LAYOUT_CHANGED)
+        imgui.pop_style_color(4)
 
     # ──────────────────────────────────────────────────────────────────────
     # DAW: Clip rectangle for a track
@@ -1601,9 +1831,8 @@ class ScriptTimeline:
                 self.follow_cursor = False
             else:
                 # Plain scroll → vertical scroll of layers
-                n_lay = len(tl.layers)
-                lh = max(DAW_MIN_LAYER_H, body_h / max(1, n_lay))
-                max_vs = max(0.0, lh * n_lay - body_h)
+                total_lh = sum(l._anim_height for l in tl.layers) if tl.layers else body_h
+                max_vs = max(0.0, total_lh - body_h)
                 self._daw_v_scroll = max(
                     0.0, min(max_vs, self._daw_v_scroll - io.mouse_wheel * 40.0))
 
@@ -1614,9 +1843,37 @@ class ScriptTimeline:
                 0.0, self._scroll_offset - io.mouse_delta.x * secs_per_px)
             self.follow_cursor = False
 
-        # ── Ruler click → seek transport ──────────────────────────────────
+        # ── Ruler click / Playhead drag → seek transport ───────────────────
         in_ruler = (win_pos.y <= mouse.y <= win_pos.y + ruler_h)
-        if is_item_hovered and in_ruler and imgui.is_mouse_clicked(0):
+        in_label_col = (mouse.x < body_x)
+
+        # Playhead drag-seek (Omakase pattern #6): detect click near the
+        # playhead line and start drag mode.
+        cur_t = tp.position
+        playhead_px = self._time_to_x(cur_t, body_x, body_w, t_start, t_end)
+        PLAYHEAD_HIT_R = 6.0   # pixels
+
+        if (is_item_hovered and imgui.is_mouse_clicked(0)
+                and not in_label_col
+                and abs(mouse.x - playhead_px) <= PLAYHEAD_HIT_R
+                and mouse.y > win_pos.y + ruler_h):
+            self._playhead_dragging = True
+            self._playhead_drag_was_playing = tp.is_playing
+            if tp.is_playing:
+                tp.Pause()
+
+        if self._playhead_dragging:
+            if imgui.is_mouse_down(0):
+                imgui.set_mouse_cursor(imgui.MouseCursor_.resize_ew)
+                seek_t = self._x_to_time(mouse.x, body_x, body_w, t_start, t_end)
+                tp.Seek(max(0.0, seek_t))
+            if imgui.is_mouse_released(0):
+                if self._playhead_drag_was_playing:
+                    tp.Play()
+                self._playhead_dragging = False
+            return
+
+        if is_item_hovered and in_ruler and not in_label_col and imgui.is_mouse_clicked(0):
             self._scrubbing = True
         if self._scrubbing:
             if is_item_active and imgui.is_mouse_down(0):
@@ -1629,13 +1886,19 @@ class ScriptTimeline:
         if self._scrubbing:
             return  # don't process other clicks while scrubbing
 
-        # ── Which layer is hovered? ───────────────────────────────────────
+        # ── Tab key → toggle label column ─────────────────────────────────
+        if is_item_hovered and imgui.is_key_pressed(imgui.Key.tab):
+            self.show_labels = not self.show_labels
+
+        # ── Which layer is hovered? (using animated layer heights) ────────
         v_off = self._daw_v_scroll
         hovered_layer_idx = -1
         if is_item_hovered and mouse.y >= body_y:
-            hovered_layer_idx = int((mouse.y - body_y + v_off) / layer_h)
-            if hovered_layer_idx >= len(tl.layers):
-                hovered_layer_idx = -1
+            # Walk through cached offsets to find which layer the mouse is in
+            for idx, (ly, lh) in enumerate(getattr(self, '_layer_y_offsets', [])):
+                if ly <= mouse.y <= ly + lh:
+                    hovered_layer_idx = idx
+                    break
 
         # ── Track horizontal drag (continuation — left-click on a clip) ───
         if self._daw_dragging_track_id is not None:
@@ -1713,8 +1976,9 @@ class ScriptTimeline:
                                 local_t0 = trk.GlobalToLocal(t0)
                                 local_t1 = trk.GlobalToLocal(t1)
                                 # Convert y to pos (inner area of the clip)
-                                ly = body_y + self._daw_sel_layer_idx * layer_h - v_off + 14.0
-                                lh = layer_h - 15.0
+                                _sel_ly, _sel_lh = self._layer_y_offsets[self._daw_sel_layer_idx] if self._daw_sel_layer_idx < len(self._layer_y_offsets) else (body_y, 80.0)
+                                ly = _sel_ly + 14.0
+                                lh = _sel_lh - 15.0
                                 pos0 = self._y_to_pos(y1, ly, lh)  # y1=bottom → lower pos
                                 pos1 = self._y_to_pos(y0, ly, lh)  # y0=top → higher pos
                                 pos0 = max(0, min(100, pos0))
@@ -1726,15 +1990,21 @@ class ScriptTimeline:
             return  # absorb mouse while selecting
 
         # ── Hover cursor: hand when Option held over a clip, else normal ──
-        if is_item_hovered and not in_ruler and self._daw_dragging_track_id is None:
-            hover_t = self._x_to_time(mouse.x, body_x, body_w, t_start, t_end)
-            if 0 <= hovered_layer_idx < len(tl.layers):
-                hover_clip = tl.layers[hovered_layer_idx].TrackAt(hover_t)
-                if hover_clip is not None and io.key_alt:
-                    imgui.set_mouse_cursor(imgui.MouseCursor_.hand)
+        # Scrubber snap-to-playhead (Omakase pattern #5): when hovering
+        # within a few pixels of the playhead, show a resize cursor as a
+        # visual hint that clicking will start playhead drag.
+        if is_item_hovered and not in_ruler and not in_label_col and self._daw_dragging_track_id is None:
+            if abs(mouse.x - playhead_px) <= PLAYHEAD_HIT_R and mouse.y > win_pos.y + ruler_h:
+                imgui.set_mouse_cursor(imgui.MouseCursor_.resize_ew)
+            else:
+                hover_t = self._x_to_time(mouse.x, body_x, body_w, t_start, t_end)
+                if 0 <= hovered_layer_idx < len(tl.layers):
+                    hover_clip = tl.layers[hovered_layer_idx].TrackAt(hover_t)
+                    if hover_clip is not None and io.key_alt:
+                        imgui.set_mouse_cursor(imgui.MouseCursor_.hand)
 
         # ── Left click ────────────────────────────────────────────────────
-        if imgui.is_mouse_clicked(0) and is_item_hovered and not in_ruler:
+        if imgui.is_mouse_clicked(0) and is_item_hovered and not in_ruler and not in_label_col:
             click_t = self._x_to_time(mouse.x, body_x, body_w, t_start, t_end)
 
             # Hit-test: is a clip under the mouse?
@@ -1748,6 +2018,9 @@ class ScriptTimeline:
                     hit_layer = layer
 
             if hit_track is not None:
+                # Check if the layer is locked
+                _layer_locked = hit_layer.locked if hit_layer else False
+
                 # ── Select track for Track Info panel ──────────────────────
                 EV.dispatch(OFS_Events.TIMELINE_TRACK_SELECTED,
                             track_id=hit_track.id)
@@ -1764,10 +2037,11 @@ class ScriptTimeline:
                     fs_idx = hit_track.funscript_data.funscript_idx
                     if 0 <= fs_idx < len(scripts):
                         script = scripts[fs_idx]
+                        _ht_ly, _ht_lh = self._layer_y_offsets[hovered_layer_idx] if hovered_layer_idx < len(self._layer_y_offsets) else (body_y, 80.0)
                         hit_a = self._find_action_near(
                             script, mouse, hit_track,
-                            body_x, body_y + hovered_layer_idx * layer_h - v_off + 14.0,
-                            body_w, layer_h - 15.0,
+                            body_x, _ht_ly + 14.0,
+                            body_w, _ht_lh - 15.0,
                             t_start, t_end,
                         )
 
@@ -1775,27 +2049,28 @@ class ScriptTimeline:
                     # Click on action dot → select / seek
                     EV.dispatch(OFS_Events.ACTION_CLICKED,
                                 action=hit_a, script=script)
-                elif io.key_shift and hit_track.track_type == TrackType.FUNSCRIPT:
+                elif io.key_shift and hit_track.track_type == TrackType.FUNSCRIPT and not _layer_locked:
                     # Shift+click in funscript clip → start rectangular selection
                     self._daw_selecting = True
                     self._daw_sel_start_mx = mouse.x
                     self._daw_sel_start_my = mouse.y
                     self._daw_sel_track_id = hit_track.id
                     self._daw_sel_layer_idx = hovered_layer_idx
-                elif io.key_alt:
+                elif io.key_alt and not _layer_locked:
                     # Option+click on clip → start horizontal drag
                     self._daw_dragging_track_id = hit_track.id
                     self._daw_drag_start_offset = hit_track.offset
                     self._daw_drag_start_mx     = mouse.x
-                elif io.key_ctrl and hit_track.track_type == TrackType.FUNSCRIPT:
+                elif io.key_ctrl and hit_track.track_type == TrackType.FUNSCRIPT and not _layer_locked:
                     # Ctrl+click in clip → create action
                     if hit_track.funscript_data:
                         fs_idx = hit_track.funscript_data.funscript_idx
                         if 0 <= fs_idx < len(scripts):
                             script = scripts[fs_idx]
                             local_t = hit_track.GlobalToLocal(click_t)
-                            ty = body_y + hovered_layer_idx * layer_h - v_off + 14.0
-                            th = layer_h - 15.0
+                            _ct_ly, _ct_lh = self._layer_y_offsets[hovered_layer_idx] if hovered_layer_idx < len(self._layer_y_offsets) else (body_y, 80.0)
+                            ty = _ct_ly + 14.0
+                            th = _ct_lh - 15.0
                             pos = self._y_to_pos(mouse.y, ty, th)
                             new_act = FunscriptAction(
                                 int(local_t * 1000), max(0, min(100, pos)))
@@ -1810,7 +2085,7 @@ class ScriptTimeline:
                 tp.Seek(max(0.0, click_t))
 
         # ── Double-click → seek ───────────────────────────────────────────
-        if imgui.is_mouse_double_clicked(0) and is_item_hovered and not in_ruler:
+        if imgui.is_mouse_double_clicked(0) and is_item_hovered and not in_ruler and not in_label_col:
             click_t = self._x_to_time(mouse.x, body_x, body_w, t_start, t_end)
             tp.Seek(max(0.0, click_t))
 

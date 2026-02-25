@@ -67,21 +67,26 @@ class OFS_VideoplayerWindow:
         Called inside the dockable window (begin/end handled by hello_imgui).
         `draw_video` mirrors OFS draw_video flag.
         `timeline_mgr` if provided, video is hidden when transport is outside
-        all video clips.
+        all video clips.  Also resolves which player to display from the pool.
         """
         avail = imgui.get_content_region_avail()
         if avail.x <= 0 or avail.y <= 0:
             return
 
-        # Check if transport is inside any video clip
+        # Resolve the active player from the pool (the video track under
+        # the transport cursor).  Falls back to the `player` argument.
+        active_player = player
         in_any_video = True
         if timeline_mgr is not None:
             pos = timeline_mgr.transport.position
             vtracks = timeline_mgr.timeline.VideoTracks()
             if vtracks:
                 in_any_video = any(vt.ContainsGlobal(pos) for _l, vt in vtracks)
+            pool_player = timeline_mgr.ActivePlayer(pos)
+            if pool_player is not None:
+                active_player = pool_player
 
-        if not draw_video or not player.VideoLoaded() or not in_any_video:
+        if not draw_video or not active_player.VideoLoaded() or not in_any_video:
             # Show placeholder when no video
             cx = imgui.get_cursor_screen_pos().x + avail.x * 0.5
             cy = imgui.get_cursor_screen_pos().y + avail.y * 0.5
@@ -90,15 +95,15 @@ class OFS_VideoplayerWindow:
             return
 
         # Compute draw area preserving aspect ratio
-        vid_w = player.VideoWidth()
-        vid_h = player.VideoHeight()
+        vid_w = active_player.VideoWidth()
+        vid_h = active_player.VideoHeight()
         if vid_w <= 0 or vid_h <= 0:
             vid_w, vid_h = 1280, 720
 
         draw_w, draw_h, uv0, uv1 = self._compute_uvs(avail, vid_w, vid_h)
         self._last_video_size = ImVec2(draw_w, draw_h)
 
-        tex = player.FrameTexture
+        tex = active_player.FrameTexture
         if not tex:
             return
 
@@ -124,8 +129,8 @@ class OFS_VideoplayerWindow:
                                imgui.ButtonFlags_.mouse_button_right |
                                imgui.ButtonFlags_.mouse_button_left)
 
-        self._handle_interaction(player, cx, cy, draw_w, draw_h)
-        self._handle_context_menu(player)
+        self._handle_interaction(active_player, cx, cy, draw_w, draw_h)
+        self._handle_context_menu(active_player)
 
     # ──────────────────────────────────────────────────────────────────────
     # UV computation — handles all VideoModes

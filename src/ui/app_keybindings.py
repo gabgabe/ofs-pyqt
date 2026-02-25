@@ -165,34 +165,81 @@ class KeybindingsMixin:
             "Next action (all scripts)", "Navigation",
             [(K.mod_ctrl, K.up_arrow, True)], repeat=True)
 
+        # ── Frame stepping (arrows) ────────────────────────────────────
+        # Single press:     arrow = 1 frame,  Ctrl+arrow = 5 frames
+        # Long press (held): arrow = continuous at framerate/2,
+        #                    Ctrl+arrow = continuous at 2× framerate
+        #
+        # Steps are now **transport-level**: the transport position is
+        # moved by n/fps seconds and Tick() slaves the video player.
+        # This works even with no track selected and eliminates the
+        # mpv round-trip latency that made the old path feel sluggish.
+        #
+        # Guard: only step when the transport is NOT playing.
+
+        import time as _kb_time
+
+        # State for long-press detection — shared between fwd / bwd / ctrl
+        _arrow_press_start: dict = {"left": 0.0, "right": 0.0,
+                                    "ctrl_left": 0.0, "ctrl_right": 0.0}
+        _LONG_PRESS_THRESHOLD = 0.25   # seconds before switching to continuous
+
+        def _frame_step(direction: int, ctrl: bool) -> None:
+            """Unified handler for arrow frame-stepping (transport-level)."""
+            if self.timeline_mgr.IsPlaying():
+                return
+
+            # Determine which key slot to track
+            prefix = "ctrl_" if ctrl else ""
+            slot = prefix + ("right" if direction > 0 else "left")
+
+            now = _kb_time.monotonic()
+            io = imgui.get_io()
+            key = K.right_arrow if direction > 0 else K.left_arrow
+            is_held = imgui.is_key_down(key)
+
+            # Detect initial press vs held repeat
+            if _arrow_press_start[slot] == 0.0 or not is_held:
+                _arrow_press_start[slot] = now
+
+            held_duration = now - _arrow_press_start[slot]
+
+            if held_duration < _LONG_PRESS_THRESHOLD:
+                # ── Single / short press: discrete step ───────────────
+                frames = 5 if ctrl else 1
+                self.timeline_mgr.StepFrames(direction * frames)
+            else:
+                # ── Long press: continuous stepping ───────────────────
+                # Ctrl+held = 2× framerate, plain held = framerate / 2
+                fps = self.timeline_mgr.EffectiveFps()
+                if ctrl:
+                    step_interval = 1.0 / (fps * 2.0)
+                else:
+                    step_interval = 1.0 / (fps * 0.5)
+                # Use frame delta to determine how many frames to step
+                frames_to_step = max(1, int(io.delta_time / step_interval))
+                self.timeline_mgr.StepFrames(direction * frames_to_step)
+
+            if not is_held:
+                _arrow_press_start[slot] = 0.0
+
         reg("prev_frame",
-            lambda: self.scripting.PreviousFrame() if self.player.IsPaused() else None,
+            lambda: _frame_step(-1, False),
             "Previous frame", "Navigation", [(0, K.left_arrow, True)], repeat=True)
         reg("next_frame",
-            lambda: self.scripting.NextFrame() if self.player.IsPaused() else None,
+            lambda: _frame_step(1, False),
             "Next frame", "Navigation", [(0, K.right_arrow, True)], repeat=True)
 
-        def _frame_x3(direction: int) -> None:
-            if not self.player.IsPaused():
-                return
-            # Ctrl+arrow: always 3 frames per step (single press or held repeat)
-            frames = 3
-            for _ in range(frames):
-                if direction > 0:
-                    self.scripting.NextFrame()
-                else:
-                    self.scripting.PreviousFrame()
-
-        reg("prev_frame_x3", lambda: _frame_x3(-1),
-            "Previous frame ×3", "Navigation",
+        reg("prev_frame_x5", lambda: _frame_step(-1, True),
+            "Previous frame ×5", "Navigation",
             [(K.mod_ctrl, K.left_arrow, True)], repeat=True)
-        reg("next_frame_x3", lambda: _frame_x3(1),
-            "Next frame ×3", "Navigation",
+        reg("next_frame_x5", lambda: _frame_step(1, True),
+            "Next frame ×5", "Navigation",
             [(K.mod_ctrl, K.right_arrow, True)], repeat=True)
 
         fast_step = self.preferences.fast_step_amount
-        reg("fast_step",     lambda: self.player.SeekFrames( fast_step), "Fast step",     "Navigation")
-        reg("fast_backstep", lambda: self.player.SeekFrames(-fast_step), "Fast backstep", "Navigation")
+        reg("fast_step",     lambda: self.timeline_mgr.StepFrames( fast_step), "Fast step",     "Navigation")
+        reg("fast_backstep", lambda: self.timeline_mgr.StepFrames(-fast_step), "Fast backstep", "Navigation")
 
         # ── Utility ───────────────────────────────────────────────────────
         reg_grp("Utility", "Utility")
@@ -214,7 +261,7 @@ class KeybindingsMixin:
             lambda: self._active().SelectTime(0, self._funscript_time()) if self._active() else None,
             "Select all left",  "Utility", [(K.mod_ctrl | K.mod_alt, K.left_arrow)])
         reg("select_all_right",
-            lambda: self._active().SelectTime(self._funscript_time(), self.player.Duration()) if self._active() else None,
+            lambda: self._active().SelectTime(self._funscript_time(), self._select_end_time()) if self._active() else None,
             "Select all right", "Utility", [(K.mod_ctrl | K.mod_alt, K.right_arrow)])
 
         reg("select_top_points",    self._select_top_points,    "Select top points",    "Utility")
@@ -320,5 +367,5 @@ class KeybindingsMixin:
 
         # ── Chapters ──────────────────────────────────────────────────────
         reg_grp("Chapters", "Chapters")
-        reg("create_chapter",  lambda: self.chapter_mgr.AddChapter(self.player.CurrentTime(), self.player.Duration()), "Create chapter",  "Chapters")
-        reg("create_bookmark", lambda: self.chapter_mgr.AddBookmark(self.player.CurrentTime()), "Create bookmark", "Chapters")
+        reg("create_chapter",  lambda: self.chapter_mgr.AddChapter(self._funscript_time(), self._select_end_time()), "Create chapter",  "Chapters")
+        reg("create_bookmark", lambda: self.chapter_mgr.AddBookmark(self._funscript_time()), "Create bookmark", "Chapters")

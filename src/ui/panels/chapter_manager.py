@@ -208,6 +208,14 @@ class ChapterManagerWindow:
         cur      = player.CurrentTime() if player.VideoLoaded() else 0.0
         duration = player.Duration()    if player.VideoLoaded() else 0.0
 
+        # When no video is loaded, try the timeline manager
+        mgr = getattr(self, '_timeline_mgr', None)
+        if mgr is not None:
+            cur = mgr.CurrentTime()
+            tl_dur = mgr.Duration()
+            if tl_dur > 0:
+                duration = tl_dur
+
         # ── Add controls ──────────────────────────────────────────────
         if imgui.button("+ Chapter"):
             self.AddChapter(cur, duration)
@@ -293,19 +301,23 @@ class ChapterManagerWindow:
                 # Col 3: actions
                 imgui.table_set_column_index(3)
                 if imgui.small_button("Seek##ch"):
-                    player.SetPositionExact(ch.start)
+                    mgr = getattr(self, '_timeline_mgr', None)
+                    if mgr:
+                        mgr.Seek(ch.start)
+                    else:
+                        player.SetPositionExact(ch.start)
                 if imgui.is_item_hovered():
                     imgui.set_tooltip("Seek to chapter start")
                 imgui.same_line(spacing=2)
                 if imgui.small_button("▶##chsetbegin"):
-                    ch.start = player.CurrentTime()
+                    ch.start = cur
                     if ch.start > ch.end:
                         ch.end = ch.start
                 if imgui.is_item_hovered():
                     imgui.set_tooltip("Set Begin to current time")
                 imgui.same_line(spacing=2)
                 if imgui.small_button("◀##chsetend"):
-                    ch.end = player.CurrentTime()
+                    ch.end = cur
                     if ch.end < ch.start:
                         ch.start = ch.end
                 if imgui.is_item_hovered():
@@ -404,7 +416,11 @@ class ChapterManagerWindow:
 
                 imgui.table_set_column_index(2)
                 if imgui.small_button("Seek##bm"):
-                    player.SetPositionExact(bm.time)
+                    mgr = getattr(self, '_timeline_mgr', None)
+                    if mgr:
+                        mgr.Seek(bm.time)
+                    else:
+                        player.SetPositionExact(bm.time)
                 imgui.same_line(spacing=4)
                 if imgui.small_button("X##bm"):
                     del_bm = i

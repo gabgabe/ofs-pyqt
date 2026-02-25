@@ -23,7 +23,8 @@ Usage:
 from __future__ import annotations
 
 from collections import deque, defaultdict
-from typing import Callable, Dict, Any, List
+from dataclasses import dataclass
+from typing import Callable, Dict, Any, List, Type
 
 # ---------------------------------------------------------------------------
 # Event type constants (mirror OFS event names)
@@ -66,6 +67,9 @@ class OFS_Events:
     TIMELINE_TRACK_ADDED  = "TimelineTrackAdded"
     TIMELINE_TRACK_REMOVED = "TimelineTrackRemoved"
     TIMELINE_LAYER_MUTE   = "TimelineLayerMute"
+    TIMELINE_LAYER_ADDED  = "TimelineLayerAdded"       # layer_id=str
+    TIMELINE_LAYER_REMOVED = "TimelineLayerRemoved"    # layer_id=str
+    TIMELINE_LAYER_RENAMED = "TimelineLayerRenamed"    # layer_id=str, name=str
     TIMELINE_LAYOUT_CHANGED = "TimelineLayoutChanged"
     TIMELINE_TRACK_SELECTED = "TimelineTrackSelected"
     TIMELINE_TRACK_DESELECTED = "TimelineTrackDeselected"
@@ -73,6 +77,75 @@ class OFS_Events:
 
     # Drag-and-drop
     DROP_FILE             = "DropFile"
+
+
+# ---------------------------------------------------------------------------
+# Typed Event base & concrete types (Omakase pattern)
+# ---------------------------------------------------------------------------
+# Each typed event is a frozen dataclass carrying all its payload.
+# dispatch_typed(event) / listen_typed(EventClass, cb) provide IDE
+# autocomplete and runtime type safety.  The legacy string-based
+# dispatch()/listen() system remains fully functional.
+
+@dataclass(frozen=True)
+class TypedEvent:
+    """Base class for typed events."""
+    pass
+
+# ── Video ──────────────────────────────────────────────────────────────
+@dataclass(frozen=True)
+class VideoLoadedEvent(TypedEvent):
+    path: str = ""
+
+@dataclass(frozen=True)
+class DurationChangeEvent(TypedEvent):
+    duration: float = 0.0
+
+@dataclass(frozen=True)
+class TimeChangeEvent(TypedEvent):
+    time: float = 0.0
+
+@dataclass(frozen=True)
+class PlayPauseChangeEvent(TypedEvent):
+    paused: bool = True
+
+@dataclass(frozen=True)
+class PlaybackSpeedChangeEvent(TypedEvent):
+    speed: float = 1.0
+
+# ── Timeline / Transport ──────────────────────────────────────────────
+@dataclass(frozen=True)
+class TimelineSeekEvent(TypedEvent):
+    time: float = 0.0
+
+@dataclass(frozen=True)
+class TrackSelectedEvent(TypedEvent):
+    track_id: str = ""
+
+@dataclass(frozen=True)
+class TrackDeselectedEvent(TypedEvent):
+    pass
+
+@dataclass(frozen=True)
+class TrackMovedEvent(TypedEvent):
+    track_id: str = ""
+    new_offset: float = 0.0
+
+@dataclass(frozen=True)
+class LayerMuteEvent(TypedEvent):
+    layer_id: str = ""
+    muted: bool = False
+
+@dataclass(frozen=True)
+class LayoutChangedEvent(TypedEvent):
+    pass
+
+# ── Buffering ─────────────────────────────────────────────────────────
+@dataclass(frozen=True)
+class BufferingEvent(TypedEvent):
+    """Fired when a video player enters or exits buffering state."""
+    buffering: bool = False
+    track_id: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +166,7 @@ class EventSystem:
 
     def __init__(self) -> None:
         self._listeners: Dict[str, List[Callable]] = defaultdict(list)
+        self._typed_listeners: Dict[str, List[Callable]] = defaultdict(list)
         self._queue: deque = deque()
 
     # ------------------------------------------------------------------
@@ -123,6 +197,35 @@ class EventSystem:
         """Fire an event immediately (synchronous)."""
         for cb in list(self._listeners.get(event_type, [])):
             cb(**kwargs)
+
+    # ------------------------------------------------------------------
+    # Typed event API (Omakase-inspired)
+    # ------------------------------------------------------------------
+
+    def listen_typed(self, event_cls: Type["TypedEvent"], callback: Callable) -> None:
+        """Register a callback for a typed event class (receives the event object)."""
+        self._typed_listeners[event_cls.__name__].append(callback)
+
+    def unlisten_typed(self, event_cls: Type["TypedEvent"], callback: Callable) -> None:
+        """Remove a typed-event listener."""
+        try:
+            self._typed_listeners[event_cls.__name__].remove(callback)
+        except ValueError:
+            pass
+
+    def dispatch_typed(self, event: "TypedEvent") -> None:
+        """Fire a typed event immediately.  All ``listen_typed`` handlers receive
+        the event object; legacy ``listen`` handlers are also fired with the
+        event's fields as ``**kwargs``."""
+        cls_name = type(event).__name__
+        # Typed listeners
+        for cb in list(self._typed_listeners.get(cls_name, [])):
+            try:
+                cb(event)
+            except Exception as e:
+                import traceback
+                print(f"[EVENTS] Error in typed handler for '{cls_name}': {e}")
+                traceback.print_exc()
 
     # ------------------------------------------------------------------
     def process(self) -> None:

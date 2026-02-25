@@ -179,8 +179,16 @@ class OFS_VideoplayerControls:
     # DrawControls — play/pause bar
     # ──────────────────────────────────────────────────────────────────────
 
+    def _has_content(self) -> bool:
+        """True if a video is loaded OR the timeline has any tracks."""
+        mgr = self._timeline_mgr
+        if mgr is not None and mgr.timeline.layers:
+            return True
+        return False
+
     def DrawControls(self, player: OFS_Videoplayer) -> None:
-        if not player.VideoLoaded():
+        has_video = player.VideoLoaded()
+        if not has_video and not self._has_content():
             imgui.text_disabled("No video")
             return
 
@@ -190,12 +198,16 @@ class OFS_VideoplayerControls:
         button_h = imgui.get_frame_height()
         small    = ImVec2(button_h, button_h)
 
-        # prev-frame (goes directly to player; SyncFromPlayer catches it)
-        if imgui.button(fa.ICON_FA_BACKWARD_STEP, small):
-            player.PreviousFrame()
-        if imgui.is_item_hovered():
-            imgui.set_tooltip("Previous frame  [←]")
-        imgui.same_line()
+        # prev-frame
+        if has_video or mgr:
+            if imgui.button(fa.ICON_FA_BACKWARD_STEP, small):
+                if mgr:
+                    mgr.StepFrames(-1)
+                else:
+                    player.PreviousFrame()
+            if imgui.is_item_hovered():
+                imgui.set_tooltip("Previous frame  [←]")
+            imgui.same_line()
 
         # play/pause — route through transport when available
         is_playing = (not mgr.IsPlaying()) if mgr else player.IsPaused()
@@ -209,11 +221,15 @@ class OFS_VideoplayerControls:
             imgui.set_tooltip("Play / Pause  [Space]")
         imgui.same_line()
 
-        # next-frame (goes directly to player; SyncFromPlayer catches it)
-        if imgui.button(fa.ICON_FA_FORWARD_STEP, small):
-            player.NextFrame()
-        if imgui.is_item_hovered():
-            imgui.set_tooltip("Next frame  [→]")
+        # next-frame
+        if has_video or mgr:
+            if imgui.button(fa.ICON_FA_FORWARD_STEP, small):
+                if mgr:
+                    mgr.StepFrames(1)
+                else:
+                    player.NextFrame()
+            if imgui.is_item_hovered():
+                imgui.set_tooltip("Next frame  [→]")
 
         imgui.same_line(spacing=8)
 
@@ -236,26 +252,29 @@ class OFS_VideoplayerControls:
 
         imgui.same_line(spacing=8)
 
-        # mute (volume is player-only, not transport)
-        mute_icon = fa.ICON_FA_VOLUME_XMARK if player.Volume() == 0 else fa.ICON_FA_VOLUME_HIGH
-        if imgui.button(mute_icon, small):
-            if player.Volume() == 0:
-                player.Unmute()
-            else:
-                player.Mute()
-        if imgui.is_item_hovered():
-            imgui.set_tooltip("Mute / Unmute")
-        imgui.same_line(spacing=4)
+        # mute / volume (only relevant when a video is loaded)
+        if has_video:
+            mute_icon = fa.ICON_FA_VOLUME_XMARK if player.Volume() == 0 else fa.ICON_FA_VOLUME_HIGH
+            if imgui.button(mute_icon, small):
+                if player.Volume() == 0:
+                    player.Unmute()
+                else:
+                    player.Mute()
+            if imgui.is_item_hovered():
+                imgui.set_tooltip("Mute / Unmute")
+            imgui.same_line(spacing=4)
 
-        # volume slider
-        avail = imgui.get_content_region_avail().x
-        imgui.set_next_item_width(max(40, min(60, avail * 0.15)))
-        vol = player.Volume()
-        changed, new_vol = imgui.slider_float("##vol", vol, 0.0, 100.0, "%.0f%%")
-        if changed:
-            player.SetVolume(new_vol)
+            # volume slider
+            avail = imgui.get_content_region_avail().x
+            imgui.set_next_item_width(max(40, min(60, avail * 0.15)))
+            vol = player.Volume()
+            changed, new_vol = imgui.slider_float("##vol", vol, 0.0, 100.0, "%.0f%%")
+            if changed:
+                player.SetVolume(new_vol)
 
-        imgui.same_line(spacing=8)
+            imgui.same_line(spacing=8)
+        else:
+            avail = imgui.get_content_region_avail().x
 
         # speed input — route through transport when available
         imgui.set_next_item_width(max(50, min(70, avail * 0.15)))
@@ -299,10 +318,26 @@ class OFS_VideoplayerControls:
             imgui.set_tooltip("Increase speed by 10%")
 
         # Actual measured speed — show when it diverges from requested speed
-        actual = player.ActualSpeed() if hasattr(player, "ActualSpeed") else speed
-        if abs(actual - speed) > 0.02 and not player.IsPaused():
-            imgui.same_line(spacing=6)
-            imgui.text_disabled(f"~{actual:.2f}\u00d7")
+        if has_video:
+            actual = player.ActualSpeed() if hasattr(player, "ActualSpeed") else speed
+            if abs(actual - speed) > 0.02 and not player.IsPaused():
+                imgui.same_line(spacing=6)
+                imgui.text_disabled(f"~{actual:.2f}\u00d7")
+
+        # ── Buffering indicator (Omakase pattern) ─────────────────────
+        if mgr and mgr.IsBuffering():
+            imgui.same_line(spacing=8)
+            # Animated dots
+            import time as _t
+            n_dots = int(_t.monotonic() * 3) % 4
+            imgui.text_colored(ImVec4(1.0, 0.7, 0.2, 1.0),
+                               "Buffering" + "." * n_dots)
+        elif has_video and player.IsBuffering() and not player.IsPaused():
+            imgui.same_line(spacing=8)
+            import time as _t
+            n_dots = int(_t.monotonic() * 3) % 4
+            imgui.text_colored(ImVec4(1.0, 0.7, 0.2, 1.0),
+                               "Buffering" + "." * n_dots)
 
     # ──────────────────────────────────────────────────────────────────────
     # DrawTimeline — custom heatmap + seek bar with chapter/bookmark overlay
@@ -316,7 +351,7 @@ class OFS_VideoplayerControls:
         always_show_bookmark_labels: bool = False,
         thumbnail_mgr=None,  # VideoThumbnailManager | None
     ) -> None:
-        if not player.VideoLoaded():
+        if not player.VideoLoaded() and not self._has_content():
             imgui.text_disabled("No video")
             return
 
@@ -326,8 +361,11 @@ class OFS_VideoplayerControls:
             bar_start, bar_end, current = eff
         else:
             bar_start = 0.0
-            bar_end   = player.Duration()
-            current   = player.CurrentTime()
+            # Prefer timeline duration for funscript-only projects
+            mgr = self._timeline_mgr
+            tl_dur = mgr.Duration() if mgr else 0.0
+            bar_end = tl_dur if tl_dur > 0 else player.Duration()
+            current = mgr.CurrentTime() if mgr else player.CurrentTime()
         duration = bar_end - bar_start
         if duration <= 0.0:
             return
@@ -427,11 +465,13 @@ class OFS_VideoplayerControls:
         imgui.invisible_button("##timeline_bar", ImVec2(W, BAR_H))
 
         if imgui.is_item_activated():
-            self._drag_was_paused = player.IsPaused()
-            if not player.IsPaused():
-                if self._timeline_mgr:
+            if self._timeline_mgr:
+                self._drag_was_paused = not self._timeline_mgr.IsPlaying()
+                if self._timeline_mgr.IsPlaying():
                     self._timeline_mgr.transport.Pause()
-                else:
+            else:
+                self._drag_was_paused = player.IsPaused()
+                if not player.IsPaused():
                     player.SetPaused(True)
 
         if imgui.is_item_active() and imgui.is_mouse_down(0):

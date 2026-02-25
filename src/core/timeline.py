@@ -44,8 +44,27 @@ from __future__ import annotations
 import time as _time
 import uuid
 from dataclasses import dataclass, field
+from decimal import Decimal, ROUND_HALF_UP
 from enum import IntEnum, auto
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+
+# ---------------------------------------------------------------------------
+# Frame-snap utility  (Omakase pattern: decimal-based time accumulation)
+# ---------------------------------------------------------------------------
+
+def snap_to_frame(t: float, fps: float) -> float:
+    """Round *t* to the nearest frame boundary at *fps*.
+
+    Uses ``Decimal`` arithmetic internally so the snap is exact even for
+    non-integer frame rates like 29.97 or 23.976.
+    """
+    if fps <= 0:
+        return t
+    d_t = Decimal(str(t))
+    d_fps = Decimal(str(fps))
+    frame = (d_t * d_fps).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    return float(frame / d_fps)
 
 
 # ---------------------------------------------------------------------------
@@ -278,9 +297,17 @@ class Layer:
     name: str = "Layer"
     muted: bool = False
     locked: bool = False
+    minimized: bool = False           # collapsed to thin bar
     height: float = 60.0              # UI row height in pixels
     tracks: List[Track] = field(default_factory=list)
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+
+    # Animation state (not serialised)
+    _anim_height: float = field(default=0.0, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if self._anim_height == 0.0:
+            self._anim_height = self.height
 
     # ── Track management ──────────────────────────────────────────────
 
@@ -324,6 +351,7 @@ class Layer:
             "name": self.name,
             "muted": self.muted,
             "locked": self.locked,
+            "minimized": self.minimized,
             "height": self.height,
             "tracks": [t.to_dict() for t in self.tracks],
         }
@@ -334,6 +362,7 @@ class Layer:
             name=d.get("name", "Layer"),
             muted=d.get("muted", False),
             locked=d.get("locked", False),
+            minimized=d.get("minimized", False),
             height=float(d.get("height", 60.0)),
         )
         lay.id = d.get("id", lay.id)
@@ -348,16 +377,32 @@ class Layer:
 class Transport:
     """Global transport — the master clock of the timeline.
 
-    Uses ``time.perf_counter()`` for wall-clock advancement so it stays in
-    sync regardless of frame rate.
+    Uses ``Decimal`` internally for tick accumulation to avoid
+    floating-point drift over long sessions (Omakase pattern).
+    The public :attr:`position` property returns a plain ``float``
+    for compatibility with all downstream code.
     """
 
     def __init__(self) -> None:
-        self.position: float = 0.0
+        self._position: Decimal = Decimal("0")
         self.state: TransportState = TransportState.PAUSED
         self.speed: float = 1.0
         self._last_tick: float = _time.perf_counter()
         self._listeners: List[Callable[[float], None]] = []
+        # Optional frame-snap fps — when >0, Seek() snaps to frame boundaries
+        self.snap_fps: float = 0.0
+        # Project FPS — used for frame-stepping when outside all video tracks
+        self.project_fps: float = 30.0
+
+    # ── Position property (float interface) ───────────────────────────
+
+    @property
+    def position(self) -> float:
+        return float(self._position)
+
+    @position.setter
+    def position(self, value: float) -> None:
+        self._position = Decimal(str(value))
 
     # ── Controls ──────────────────────────────────────────────────────
 
@@ -375,7 +420,7 @@ class Transport:
 
     def Stop(self) -> None:
         self.state = TransportState.STOPPED
-        self.position = 0.0
+        self._position = Decimal("0")
 
     def TogglePlay(self) -> None:
         if self.is_playing:
@@ -384,8 +429,15 @@ class Transport:
             self.Play()
 
     def Seek(self, t: float) -> None:
-        """Jump to absolute position *t* (seconds)."""
-        self.position = max(0.0, t)
+        """Jump to absolute position *t* (seconds).
+
+        If :attr:`snap_fps` > 0 the position is snapped to the nearest
+        frame boundary (Omakase decimal-time pattern).
+        """
+        t = max(0.0, t)
+        if self.snap_fps > 0:
+            t = snap_to_frame(t, self.snap_fps)
+        self._position = Decimal(str(t))
         self._last_tick = _time.perf_counter()
         self._notify()
 
@@ -393,18 +445,34 @@ class Transport:
         """Shift position by *delta* seconds."""
         self.Seek(self.position + delta)
 
+    def StepFrames(self, n: int, fps: float) -> None:
+        """Move the transport by *n* frames at the given *fps*.
+
+        Uses Decimal arithmetic so that stepping forward then backward
+        by the same count returns to the exact starting position.
+        """
+        if fps <= 0:
+            return
+        d_fps = Decimal(str(fps))
+        d_n   = Decimal(str(n))
+        delta = d_n / d_fps
+        new_pos = max(Decimal("0"), self._position + delta)
+        self._position = new_pos
+        self._last_tick = _time.perf_counter()
+        self._notify()
+
     # ── Tick (call once per frame) ────────────────────────────────────
 
     def Tick(self) -> None:
         """Advance the transport position if playing.
 
-        Uses wall-clock delta so the position stays real-time accurate
-        even when the frame rate varies.
+        Uses ``Decimal`` accumulation so that very small per-frame deltas
+        don't lose precision over many minutes of continuous playback.
         """
         now = _time.perf_counter()
         if self.is_playing:
-            dt = (now - self._last_tick) * self.speed
-            self.position = max(0.0, self.position + dt)
+            dt = Decimal(str((now - self._last_tick) * self.speed))
+            self._position = max(Decimal("0"), self._position + dt)
             self._notify()
         self._last_tick = now
 
