@@ -304,11 +304,13 @@ class TimelineManager:
                 self.timeline = Timeline.from_dict(saved)
                 log.info("Timeline restored from project extra-state")
                 self._reconcile_funscripts()
+                EV.enqueue(OFS_Events.TIMELINE_BUILT)
                 return
             except Exception as exc:
                 log.warning(f"Failed to restore timeline from state: {exc}")
 
         self._build_default_layout()
+        EV.enqueue(OFS_Events.TIMELINE_BUILT)
 
     def _build_default_layout(self) -> None:
         """Create a fresh layer layout from the current project data."""

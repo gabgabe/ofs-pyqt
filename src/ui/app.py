@@ -51,6 +51,8 @@ from src.ui.panels.chapter_manager   import ChapterManagerWindow
 from src.ui.panels.metadata_editor   import MetadataEditorWindow
 from src.ui.panels.track_info         import TrackInfoWindow
 from src.ui.panels.launch_wizard       import LaunchWizard
+from src.ui.panels.routing_panel       import RoutingPanel
+from src.core.routing_matrix           import RoutingMatrix
 from src.ui.app_state    import OFS_Status, AUTO_BACKUP_INTERVAL, FUNSCRIPT_AXIS_NAMES
 from src.ui.app_editing  import EditingCommandsMixin
 from src.ui.app_keybindings import KeybindingsMixin
@@ -96,6 +98,8 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         self.metadata_editor = MetadataEditorWindow()
         self.track_info      = TrackInfoWindow()
         self.launch_wizard   = LaunchWizard(str(Path.home() / ".ofs-pyqt"))
+        self.routing         = RoutingMatrix()
+        self.routing_panel   = RoutingPanel()
 
         # State
         self.status: int         = OFS_Status.NONE
@@ -120,6 +124,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         self.show_about          : bool = False
         self.show_project_editor : bool = False
         self.show_track_info     : bool = True
+        self.show_routing       : bool = False
 
         # Timeline display flags
         self.always_show_bookmark_labels: bool = False
@@ -421,6 +426,11 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
                 _prev_speed_cb(speed)
         self.player.on_speed_change = _on_speed_change
 
+        # Init routing matrix
+        self.routing.rebuild_ofs_ws_outputs()
+        self.routing.SetFunscriptValueGetter(self._routing_read_funscript)
+        self._routing_sync_tracks()
+
         # Init web API (auto-start only if was active on last exit)
         if self._ws_active:
             self.web_api.Start()
@@ -449,6 +459,12 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
             self.timeline_mgr.Tick()
         except Exception as exc:
             log.error(f"TimelineManager.Tick() error: {exc}")
+
+        # Process routing matrix (zero-alloc, O(active_links))
+        try:
+            self.routing.Process(self.timeline_mgr.CurrentTime())
+        except Exception as exc:
+            log.error(f"RoutingMatrix.Process() error: {exc}")
 
         # Idle detection: any player playing → not idle
         any_playing = self.timeline_mgr.AnyPlayerPlaying() or (
@@ -546,6 +562,20 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
             self._show_about_window()
         if self.show_project_editor:
             self._show_project_window()
+        # Routing panel
+        if self.show_routing:
+            flags = (
+                imgui.WindowFlags_.no_docking
+                | imgui.WindowFlags_.no_collapse
+            )
+            imgui.set_next_window_size(ImVec2(700, 450), imgui.Cond_.first_use_ever)
+            opened, self.show_routing = imgui.begin(
+                "Routing###Routing", self.show_routing, flags
+            )
+            if opened:
+                self.routing_panel.Show(self.routing, self.timeline_mgr)
+            imgui.end()
+
         self._draw_remove_confirm()
         self._draw_close_confirm()
         self._draw_axis_wizard()
@@ -684,6 +714,46 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         EV.listen(OFS_Events.TIMELINE_TRACK_SELECTED, self._on_track_selected)
         EV.listen(OFS_Events.TIMELINE_TRACK_DESELECTED, self._on_track_deselected)
         EV.listen(OFS_Events.TIMELINE_ADD_AXIS_REQUEST, self._on_add_axis_request)
+        EV.listen(OFS_Events.TIMELINE_BUILT,               self._on_timeline_built)
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Routing matrix helpers
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _routing_read_funscript(self, track_id: str, time_s: float) -> float:
+        """Read the interpolated funscript value for a track at *time_s*.
+
+        Used as the RoutingMatrix callback.  Returns 0-100.
+        """
+        from src.core.timeline import TrackType
+        tl = self.timeline_mgr.timeline
+        if not tl:
+            return 0.0
+        for _lay, trk in tl.FunscriptTracks():
+            if trk.id == track_id and trk.funscript_data is not None:
+                idx = trk.funscript_data.funscript_idx
+                if 0 <= idx < len(self.project.funscripts):
+                    fs = self.project.funscripts[idx]
+                    # Convert global time → track-local time
+                    local_ms = (time_s - trk.offset) * 1000.0
+                    if local_ms < 0:
+                        return 0.0
+                    return fs.actions.Interpolate(local_ms)
+        return 0.0
+
+    def _routing_sync_tracks(self) -> None:
+        """Synchronise routing input nodes with current timeline funscript tracks."""
+        from src.core.timeline import TrackType
+        tracks = []
+        tl = self.timeline_mgr.timeline
+        if tl:
+            for _lay, trk in tl.FunscriptTracks():
+                tracks.append((trk.id, trk.name))
+        self.routing.sync_funscript_tracks(tracks)
+
+    def _on_timeline_built(self, **kw) -> None:
+        """Called when the timeline layout is rebuilt — re-sync routing inputs."""
+        self._routing_sync_tracks()
 
     # ──────────────────────────────────────────────────────────────────────
     # Video player pool management
@@ -1753,6 +1823,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
             self.show_ws_api                 = state.get("show_ws_api",                 self.show_ws_api)
             self.show_video                  = state.get("show_video",                  self.show_video)
             self.show_track_info             = state.get("show_track_info",             self.show_track_info)
+            self.show_routing                = state.get("show_routing",                self.show_routing)
             self.always_show_bookmark_labels = state.get("always_show_bookmark_labels", self.always_show_bookmark_labels)
             self._ws_active                  = state.get("ws_active",                   self._ws_active)
             self.player_window.video_mode    = state.get("video_mode",                 self.player_window.video_mode)
@@ -1773,6 +1844,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
             "show_ws_api":                 self.show_ws_api,
             "show_video":                  self.show_video,
             "show_track_info":             self.show_track_info,
+            "show_routing":                self.show_routing,
             "always_show_bookmark_labels": self.always_show_bookmark_labels,
             "ws_active":                   self._ws_active,
             "video_mode":                  self.player_window.video_mode,
