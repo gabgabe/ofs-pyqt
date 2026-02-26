@@ -814,7 +814,9 @@ class Funscript:
         new_positions = self._compute_range_extend(selected, range_extend)
         for old_a, new_pos in zip(selected, new_positions):
             self.actions.RemoveAction(old_a)
-            self.actions.Add(FunscriptAction(old_a.at, new_pos))
+            new_a = FunscriptAction(old_a.at, new_pos)
+            self.actions.Add(new_a)
+            self.selection.Add(FunscriptAction(new_a.at, new_a.pos))
         self._mark_edited()
 
     @staticmethod

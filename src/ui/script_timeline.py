@@ -36,6 +36,7 @@ from src.core.tempo        import BEAT_MULTIPLES, BEAT_COLORS_RGBA
 if TYPE_CHECKING:
     from src.core.timeline_manager import TimelineManager
     from src.core.timeline import Layer, Track
+    from src.ui.ui_colors import UIColors
 
 
 def _col32(r: float, g: float, b: float, a: float = 1.0) -> int:
@@ -179,6 +180,9 @@ class ScriptTimeline:
         self._win_pos: ImVec2 = ImVec2(0, 0)
         self._win_size: ImVec2 = ImVec2(0, 0)
 
+        # ── Shared colour table (set from app via set_colors) ─────────────
+        self._ui_colors: Optional["UIColors"] = None
+
         # ── DAW mode state ────────────────────────────────────────────────
         # Currently selected track id (highlight in DAW view)
         self._selected_track_id: Optional[str] = None
@@ -201,6 +205,21 @@ class ScriptTimeline:
         self._daw_sel_track_id: Optional[str] = None
         self._daw_sel_layer_idx: int = -1
 
+        # Click+drag full-height horizontal selection (non-shift)
+        self._daw_fullsel: bool = False          # currently dragging
+        self._daw_fullsel_start_mx: float = 0.0  # mouse-x at drag start
+
+        # Deferred click: on mouse-down we record intent; if mouse moves
+        # beyond a threshold we start full-height selection, otherwise on
+        # release we seek (single-click).  This avoids the old instant-seek
+        # that made click+drag impossible.
+        self._daw_pending_click: bool = False
+        self._daw_pending_mx: float = 0.0
+        self._daw_pending_my: float = 0.0
+        self._daw_pending_track_id: Optional[str] = None
+        self._daw_pending_layer_idx: int = -1
+        self._DAW_DRAG_THRESHOLD: float = 5.0    # px before drag recognised
+
         # ── Playhead drag-seek (Omakase pattern #6) ──────────────────────
         self._playhead_dragging: bool = False
         self._playhead_drag_was_playing: bool = False
@@ -218,6 +237,77 @@ class ScriptTimeline:
     def Init(self) -> None:
         """Initialise the timeline. Mirrors ``ScriptTimeline::Init``."""
         pass
+
+    def set_colors(self, colors: "UIColors") -> None:
+        """Set the shared colour table.  Called once from app setup."""
+        self._ui_colors = colors
+
+    def _refresh_colors(self) -> None:
+        """Stamp module-level COL_* globals from the shared UIColors.
+
+        Called at the start of every Show() so all draw routines pick up
+        live preference changes without per-call lookups.
+        """
+        global COL_TIMELINE_BG, COL_CURSOR, COL_ACTION, COL_ACTION_SEL
+        global COL_ACTION_SEL_RING, COL_LINE_SEL, COL_ACTION_LINE
+        global COL_SEL_RECT, COL_SEL_RECT_BORDER
+        global COL_INACTIVE_TRACK, COL_INACTIVE_LINE, COL_CURSOR_SHADOW
+        global COL_HIGH_SPEED, COL_MID_SPEED, COL_LOW_SPEED
+        global COL_HEIGHT_GUIDE
+        global COL_DAW_BG, COL_DAW_LAYER_ALT, COL_DAW_LAYER_BORDER
+        global COL_DAW_CURSOR, COL_DAW_RULER_BG, COL_DAW_RULER_TICK
+        global COL_DAW_RULER_TEXT, COL_DAW_CLIP_BORDER, COL_DAW_MUTED_OVERLAY
+        global COL_DAW_LABEL_BG, COL_DAW_LABEL_TEXT, COL_DAW_LABEL_MUTED
+
+        c = self._ui_colors
+        if c is None:
+            return
+
+        COL_TIMELINE_BG     = _col32(*c.timeline_bg)
+        COL_CURSOR          = _col32(*c.playhead)
+        COL_ACTION          = _col32(*c.action_dot)
+        COL_ACTION_SEL      = _col32(*c.action_dot_selected)
+        COL_ACTION_SEL_RING = _col32(*c.action_dot_selected_ring)
+        COL_LINE_SEL        = _col32(*c.action_line_selected)
+        COL_ACTION_LINE     = _col32(*c.action_line)
+        COL_SEL_RECT        = _col32(*c.selection_rect)
+        COL_SEL_RECT_BORDER = _col32(*c.selection_rect_border)
+        COL_INACTIVE_TRACK  = _col32(*c.inactive_track_dot)
+        COL_INACTIVE_LINE   = _col32(*c.inactive_track_line)
+        COL_CURSOR_SHADOW   = _col32(*c.playhead_shadow)
+        COL_HIGH_SPEED      = _col32(*c.speed_high)
+        COL_MID_SPEED       = _col32(*c.speed_mid)
+        COL_LOW_SPEED       = _col32(*c.speed_low)
+        COL_HEIGHT_GUIDE    = _col32(*c.height_guide)
+        COL_DAW_BG           = _col32(*c.daw_bg)
+        COL_DAW_LAYER_ALT    = _col32(*c.daw_layer_alt)
+        COL_DAW_LAYER_BORDER = _col32(*c.daw_layer_border)
+        COL_DAW_CURSOR       = _col32(*c.daw_cursor)
+        COL_DAW_RULER_BG     = _col32(*c.daw_ruler_bg)
+        COL_DAW_RULER_TICK   = _col32(*c.daw_ruler_tick)
+        COL_DAW_RULER_TEXT   = _col32(*c.daw_ruler_text)
+        COL_DAW_CLIP_BORDER  = _col32(*c.daw_clip_border)
+        COL_DAW_MUTED_OVERLAY = _col32(*c.daw_muted_overlay)
+        COL_DAW_LABEL_BG     = _col32(*c.daw_label_bg)
+        COL_DAW_LABEL_TEXT   = _col32(*c.daw_label_text)
+        COL_DAW_LABEL_MUTED  = _col32(*c.daw_label_muted)
+
+        # Instance-level colours (not module globals)
+        self.sync_line_color   = tuple(c.sync_line)
+        self.max_speed_color   = tuple(c.max_speed_highlight)
+        self.waveform_color    = tuple(c.waveform_tint)
+
+        # Instance-level cached u32 for inline draw calls
+        self._col_line_border       = _col32(*c.action_line_border)
+        self._col_daw_locked        = _col32(*c.daw_locked_overlay)
+        self._col_daw_zoom          = _col32(*c.daw_zoom_label)
+        self._col_daw_scrollbar     = _col32(*c.daw_scrollbar)
+        self._col_daw_trigger       = _col32(*c.daw_trigger_marker)
+        self._col_frame_tick        = c.frame_tick            # kept as list for alpha calc
+        self._col_daw_grid_line     = c.daw_grid_line         # kept as list for alpha calc
+        self._col_tempo_subdiv      = _col32(*c.tempo_subdivision)
+        self._col_tempo_label       = _col32(*c.tempo_measure_label)
+        self._col_seconds_label     = _col32(*c.seconds_label)
 
     def Update(self) -> None:
         """Animate visible-time zoom towards target (OFS: easeOutExpo lerp, 150 ms)."""
@@ -250,6 +340,7 @@ class ScriptTimeline:
 
         Otherwise falls back to the original video-based per-script rendering.
         """
+        self._refresh_colors()
         if timeline_mgr is not None:
             self._show_daw(player, scripts, active_idx, timeline_mgr)
             return
@@ -480,8 +571,9 @@ class ScriptTimeline:
         MAX_VISIBLE = 400.0
         visible_frames = visible_time / frame_time
         if visible_frames < MAX_VISIBLE * 0.75:
-            alpha = int(255 * (1.0 - visible_frames / MAX_VISIBLE))
-            col = _col32(80 / 255, 80 / 255, 80 / 255, alpha / 255)
+            ft = self._col_frame_tick if self._ui_colors else [80/255, 80/255, 80/255, 1.0]
+            alpha = int(255 * ft[3] * (1.0 - visible_frames / MAX_VISIBLE))
+            col = _col32(ft[0], ft[1], ft[2], alpha / 255)
             offset = -math.fmod(t_start, frame_time)
             line_count = int(visible_frames) + 2
             for i in range(line_count):
@@ -496,8 +588,9 @@ class ScriptTimeline:
         time_interval = n_frames_div * frame_time
         visible_intervals = visible_time / time_interval if time_interval > 0 else 999.0
         if visible_intervals < MAX_DIVIDERS * 0.8:
-            alpha = int(255 * (1.0 - visible_intervals / MAX_DIVIDERS))
-            col2 = _col32(80 / 255, 80 / 255, 80 / 255, alpha / 255)
+            ft2 = self._col_frame_tick if self._ui_colors else [80/255, 80/255, 80/255, 1.0]
+            alpha2 = int(255 * ft2[3] * (1.0 - visible_intervals / MAX_DIVIDERS))
+            col2 = _col32(ft2[0], ft2[1], ft2[2], alpha2 / 255)
             offset2 = -math.fmod(t_start, time_interval)
             line_count2 = int(visible_intervals) + 2
             for i in range(line_count2):
@@ -521,7 +614,7 @@ class ScriptTimeline:
             return
 
         beat_color = _TEMPO_BEAT_COLORS[measure_idx]
-        white_60   = _col32(1.0, 1.0, 1.0, 0.60)
+        white_60   = self._col_tempo_subdiv if self._ui_colors else _col32(1.0, 1.0, 1.0, 0.60)
 
         visible_beats = int(visible_time / beat_time)
         invisible_prev_beats = int(t_start / beat_time) if beat_time > 0 else 0
@@ -545,7 +638,7 @@ class ScriptTimeline:
                     measure_num = beat_idx // thing if thing > 0 else beat_idx
                     dl.add_text(
                         ImVec2(px + 3, y + 2),
-                        _col32(0.9, 0.9, 0.9, 0.8),
+                        self._col_tempo_label if self._ui_colors else _col32(0.9, 0.9, 0.9, 0.8),
                         str(measure_num),
                     )
 
@@ -558,7 +651,7 @@ class ScriptTimeline:
         text_size = imgui.calc_text_size(label)
         dl.add_text(
             ImVec2(x + 4, y + h - text_size.y - 4),
-            _col32(0.7, 0.7, 0.7, 1.0),
+            _col32(*self._ui_colors.seconds_label) if self._ui_colors else _col32(0.7, 0.7, 0.7, 1.0),
             label
         )
 
@@ -576,11 +669,11 @@ class ScriptTimeline:
         # Active:   purple top  (60,0,60)  → darker bottom (24,0,24)
         # Inactive: dark-blue top (0,0,50) → darker bottom (0,0,20)
         if is_active:
-            col_top    = _col32(60/255,  0,       60/255,  1.0)
-            col_bottom = _col32(24/255,  0,       24/255,  1.0)
+            col_top    = _col32(*self._ui_colors.active_track_top) if self._ui_colors else _col32(60/255,  0,       60/255,  1.0)
+            col_bottom = _col32(*self._ui_colors.active_track_bottom) if self._ui_colors else _col32(24/255,  0,       24/255,  1.0)
         else:
-            col_top    = _col32(0,       0,       50/255,  1.0)
-            col_bottom = _col32(0,       0,       20/255,  1.0)
+            col_top    = _col32(*self._ui_colors.inactive_track_top) if self._ui_colors else _col32(0,       0,       50/255,  1.0)
+            col_bottom = _col32(*self._ui_colors.inactive_track_bottom) if self._ui_colors else _col32(0,       0,       20/255,  1.0)
         dl.add_rect_filled_multi_color(
             ImVec2(x, y), ImVec2(x + w, y + h),
             col_top, col_top, col_bottom, col_bottom,
@@ -590,7 +683,7 @@ class ScriptTimeline:
         if is_hovered:
             dl.add_rect_filled(
                 ImVec2(x, y), ImVec2(x + w, y + h),
-                _col32(1.0, 1.0, 1.0, 10 / 255),
+                _col32(*self._ui_colors.track_hover_highlight) if self._ui_colors else _col32(1.0, 1.0, 1.0, 10 / 255),
             )
 
         # ── Per-track clip rect ────────────────────────────────────────────
@@ -613,9 +706,10 @@ class ScriptTimeline:
 
         # Track title (small label)
         title = script.title or f"Script {track_idx}"
+        title_col = _col32(*(self._ui_colors.track_title_active if is_active else self._ui_colors.track_title_inactive)) if self._ui_colors else _col32(0.8, 0.8, 0.8, 0.7 if is_active else 0.4)
         dl.add_text(
             ImVec2(x + 4, y + 2),
-            _col32(0.8, 0.8, 0.8, 0.7 if is_active else 0.4),
+            title_col,
             title[:20],
         )
 
@@ -681,7 +775,7 @@ class ScriptTimeline:
                             py     = self._pos_to_y(pos, y, h)
                             pts.append(ImVec2(px, py))
                         for k in range(len(pts) - 1):
-                            dl.add_line(pts[k], pts[k+1], _col32(0, 0, 0, 1.0), 7.0)
+                            dl.add_line(pts[k], pts[k+1], self._col_line_border if self._ui_colors else _col32(0, 0, 0, 1.0), 7.0)
                             dl.add_line(pts[k], pts[k+1], col_line, LINE_THICKNESS)
                     prev_action = a
             else:
@@ -697,7 +791,7 @@ class ScriptTimeline:
                             self._pos_to_y(a.pos, y, h)
                         )
                         # Black border for depth
-                        dl.add_line(p1, p2, _col32(0, 0, 0, 1.0), 7.0)
+                        dl.add_line(p1, p2, self._col_line_border if self._ui_colors else _col32(0, 0, 0, 1.0), 7.0)
                         # Speed-based color
                         if is_active:
                             col_line = self._get_speed_color(a, prev_action)
@@ -755,11 +849,11 @@ class ScriptTimeline:
 
         # ── Per-track border (OFS: green=active, slider-grab=has-sel, white=default)
         if is_active:
-            border_col = _col32(0,       180/255, 0,       1.0)  # OFS: (0,180,0)
+            border_col = _col32(*self._ui_colors.track_border_active) if self._ui_colors else _col32(0, 180/255, 0, 1.0)
         elif script.HasSelection():
-            border_col = _col32(0.37,    0.44,    0.74,    1.0)  # ImGuiCol_SliderGrabActive
+            border_col = _col32(*self._ui_colors.track_border_selected) if self._ui_colors else _col32(0.37, 0.44, 0.74, 1.0)
         else:
-            border_col = _col32(1.0,     1.0,     1.0,     1.0)  # white
+            border_col = _col32(*self._ui_colors.track_border_default) if self._ui_colors else _col32(1.0, 1.0, 1.0, 1.0)
         dl.add_rect(
             ImVec2(x - 2,     y - 2),
             ImVec2(x + w + 2, y + h + 2),
@@ -1214,7 +1308,7 @@ class ScriptTimeline:
                 dl.add_rect_filled(
                     ImVec2(body_x, ly),
                     ImVec2(body_x + body_w, ly + layer_h),
-                    _col32(0.15, 0.12, 0.0, 0.25),
+                    self._col_daw_locked if self._ui_colors else _col32(0.15, 0.12, 0.0, 0.25),
                 )
 
             cum_y += layer_h
@@ -1257,7 +1351,7 @@ class ScriptTimeline:
         txt_sz = imgui.calc_text_size(label)
         dl.add_text(
             ImVec2(body_x + body_w - txt_sz.x - 6, win_pos.y + avail.y - txt_sz.y - 4),
-            _col32(0.5, 0.5, 0.5, 0.8),
+            self._col_daw_zoom if self._ui_colors else _col32(0.5, 0.5, 0.5, 0.8),
             label,
         )
 
@@ -1268,7 +1362,7 @@ class ScriptTimeline:
             dl.add_rect_filled(
                 ImVec2(win_pos.x + avail.x - 4, sb_y),
                 ImVec2(win_pos.x + avail.x - 1, sb_y + sb_h),
-                _col32(1.0, 1.0, 1.0, 0.25), 2.0,
+                _col32(1.0, 1.0, 1.0, 0.25) if not self._ui_colors else self._col_daw_scrollbar, 2.0,
             )
 
         # ── Description pane toggle button (top-left corner) ──────────────
@@ -1650,7 +1744,7 @@ class ScriptTimeline:
                     dl.add_line(
                         ImVec2(ex, inner_y),
                         ImVec2(ex, inner_y + inner_h),
-                        _col32(1.0, 0.8, 0.2, 0.9), 2.0)
+                        _col32(1.0, 0.8, 0.2, 0.9) if not self._ui_colors else self._col_daw_trigger, 2.0)
 
         dl.pop_clip_rect()
 
@@ -1714,6 +1808,27 @@ class ScriptTimeline:
         # ── Height guide lines (0 %, 25 %, 50 %, 75 %, 100 %) ────────────
         self._draw_height_lines(dl, x, y, w, h)
 
+        # ── DAW vertical grid lines (time subdivisions) ───────────────────
+        if self._ui_colors:
+            gl = self._col_daw_grid_line
+            if gl[3] > 0.01:
+                visible_time = t_end - t_start
+                if visible_time > 0:
+                    # Auto-pick a sensible interval (1s, 0.5s, 0.25s, 0.1s…)
+                    TARGET_LINES = 10
+                    raw_interval = visible_time / TARGET_LINES
+                    nice_steps = [5.0, 2.0, 1.0, 0.5, 0.25, 0.1, 0.05, 0.025, 0.01]
+                    interval = next((s for s in nice_steps if s <= raw_interval), 0.01)
+                    grid_col = _col32(*gl)
+                    # Align to interval boundary
+                    first = math.ceil(t_start / interval) * interval
+                    t = first
+                    while t <= t_end:
+                        gx = x + (t - t_start) / visible_time * w
+                        if x - 1 <= gx <= x + w + 1:
+                            dl.add_line(ImVec2(gx, y), ImVec2(gx, y + h), grid_col, 1.0)
+                        t += interval
+
         # ── Overlay grid (Frame / Tempo) ──────────────────────────────────
         # Convert visible range to track-local times for the grid methods
         local_t_start = max(0.0, t_start - offset)
@@ -1759,7 +1874,7 @@ class ScriptTimeline:
                         col_line = self._get_speed_color(a, prev_a)
                     else:
                         col_line = COL_INACTIVE_LINE
-                    dl.add_line(p1, p2, _col32(0, 0, 0, 1.0), 5.0)
+                    dl.add_line(p1, p2, self._col_line_border if self._ui_colors else _col32(0, 0, 0, 1.0), 5.0)
                     dl.add_line(p1, p2, col_line, 2.0)
                     # Highlight selected segments
                     if is_active and (prev_a in script.selection) and (a in script.selection):
@@ -1948,6 +2063,8 @@ class ScriptTimeline:
                 if s.HasSelection():
                     s.ClearSelection()
             self._daw_selecting = False
+            self._daw_fullsel = False
+            self._daw_pending_click = False
 
         # ── Shift+drag rectangular selection (continuation) ───────────────
         if self._daw_selecting:
@@ -1988,6 +2105,56 @@ class ScriptTimeline:
                                     min(pos0, pos1), max(pos0, pos1))
                 self._daw_selecting = False
             return  # absorb mouse while selecting
+
+        # ── Click+drag full-height horizontal selection (continuation) ────
+        if self._daw_fullsel:
+            dl = imgui.get_window_draw_list()
+            x0 = min(self._daw_fullsel_start_mx, mouse.x)
+            x1 = max(self._daw_fullsel_start_mx, mouse.x)
+            # Draw selection rectangle spanning full body height
+            dl.add_rect_filled(ImVec2(x0, body_y), ImVec2(x1, body_y + body_h), COL_SEL_RECT)
+            dl.add_rect(ImVec2(x0, body_y), ImVec2(x1, body_y + body_h), COL_SEL_RECT_BORDER)
+
+            if not imgui.is_mouse_down(0):
+                # Released — select actions across ALL funscript tracks
+                t0 = self._x_to_time(x0, body_x, body_w, t_start, t_end)
+                t1 = self._x_to_time(x1, body_x, body_w, t_start, t_end)
+                if abs(t1 - t0) > 0.008:  # 8 ms minimum
+                    # Clear all selections first, then add matching actions
+                    for s in scripts:
+                        s.ClearSelection()
+                    for lay in tl.layers:
+                        for trk in lay.tracks:
+                            if trk.track_type == TrackType.FUNSCRIPT and trk.funscript_data:
+                                fs_idx = trk.funscript_data.funscript_idx
+                                if 0 <= fs_idx < len(scripts):
+                                    local_t0 = trk.GlobalToLocal(min(t0, t1))
+                                    local_t1 = trk.GlobalToLocal(max(t0, t1))
+                                    start_ms = int(local_t0 * 1000)
+                                    end_ms   = int(local_t1 * 1000)
+                                    sc = scripts[fs_idx]
+                                    for a in sc.actions.GetActionsInRange(start_ms, end_ms):
+                                        sc.selection.Add(FunscriptAction(a.at, a.pos))
+                self._daw_fullsel = False
+            return  # absorb mouse while full-height selecting
+
+        # ── Pending click: detect drag vs single-click ────────────────────
+        if self._daw_pending_click:
+            dx = mouse.x - self._daw_pending_mx
+            dy = mouse.y - self._daw_pending_my
+            if abs(dx) > self._DAW_DRAG_THRESHOLD or abs(dy) > self._DAW_DRAG_THRESHOLD:
+                # Exceeded threshold → start full-height selection from
+                # the original mouse-down position.
+                self._daw_fullsel = True
+                self._daw_fullsel_start_mx = self._daw_pending_mx
+                self._daw_pending_click = False
+            elif not imgui.is_mouse_down(0):
+                # Released without dragging → single-click seek
+                click_t = self._x_to_time(
+                    self._daw_pending_mx, body_x, body_w, t_start, t_end)
+                tp.Seek(max(0.0, click_t))
+                self._daw_pending_click = False
+            return  # absorb mouse while pending
 
         # ── Hover cursor: hand when Option held over a clip, else normal ──
         # Scrubber snap-to-playhead (Omakase pattern #5): when hovering
@@ -2077,12 +2244,16 @@ class ScriptTimeline:
                             EV.dispatch(OFS_Events.ACTION_SHOULD_CREATE,
                                         action=new_act, script=script)
                 else:
-                    # Plain click on clip body → seek transport
-                    tp.Seek(max(0.0, click_t))
+                    # Plain click on clip body → defer (may become drag-select)
+                    self._daw_pending_click = True
+                    self._daw_pending_mx = mouse.x
+                    self._daw_pending_my = mouse.y
             else:
-                # Click on empty → deselect track + seek transport
+                # Click on empty → deselect track, defer seek (may drag)
                 EV.dispatch(OFS_Events.TIMELINE_TRACK_DESELECTED)
-                tp.Seek(max(0.0, click_t))
+                self._daw_pending_click = True
+                self._daw_pending_mx = mouse.x
+                self._daw_pending_my = mouse.y
 
         # ── Double-click → seek ───────────────────────────────────────────
         if imgui.is_mouse_double_clicked(0) and is_item_hovered and not in_ruler and not in_label_col:

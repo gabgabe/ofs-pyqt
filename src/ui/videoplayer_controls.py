@@ -19,6 +19,10 @@ from imgui_bundle import icons_fontawesome_6 as fa
 from src.core.video_player import OFS_Videoplayer
 from src.core.funscript    import Funscript, FunscriptAction
 
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from src.ui.ui_colors import UIColors
+
 # ── Heatmap colours (mirrors OFS gradient) ────────────────────────────────
 _HEATMAP_COLD  = (0x11/255, 0x11/255, 0xFF/255, 1.0)   # deep blue — 0 speed
 _HEATMAP_WARM  = (0x11/255, 0xFF/255, 0x11/255, 1.0)   # green
@@ -72,6 +76,9 @@ class OFS_VideoplayerControls:
         self._chapter_tooltip: str = ""
         self._drag_was_paused: bool = True   # for seek-pause-resume
 
+        # Shared colour table (set via set_colors)
+        self._ui_colors: Optional["UIColors"] = None
+
         # Optional transport controller — when set, play/pause/seek/speed go
         # through the TimelineManager instead of calling the player directly.
         self._timeline_mgr = None  # TimelineManager | None
@@ -89,6 +96,10 @@ class OFS_VideoplayerControls:
     def SetTimelineManager(self, mgr) -> None:
         """Wire the transport controller for DAW-mode routing."""
         self._timeline_mgr = mgr
+
+    def set_colors(self, colors: "UIColors") -> None:
+        """Wire the shared colour table."""
+        self._ui_colors = colors
 
     def SetSelectedTrackId(self, track_id: Optional[str]) -> None:
         """Set the selected track for progress-bar range mapping."""
@@ -135,6 +146,13 @@ class OFS_VideoplayerControls:
         self._heatmap_duration = duration
         seg_dur = duration / HEATMAP_SEGMENTS
         colours: List[int] = []
+
+        # Use UIColors for heatmap gradient if available
+        global _HEATMAP_COLD, _HEATMAP_WARM, _HEATMAP_HOT
+        if self._ui_colors is not None:
+            _HEATMAP_COLD = tuple(self._ui_colors.heatmap_cold)
+            _HEATMAP_WARM = tuple(self._ui_colors.heatmap_warm)
+            _HEATMAP_HOT  = tuple(self._ui_colors.heatmap_hot)
 
         for i in range(HEATMAP_SEGMENTS):
             t_start = i       * seg_dur
@@ -382,10 +400,17 @@ class OFS_VideoplayerControls:
         ox, oy  = origin.x, origin.y
 
         # 1 ── Background (grey unfilled portion) ──────────────────────
+        _c = self._ui_colors
+        col_bg      = _rgba_to_u32(*_c.progress_bg)      if _c else 0xFF505050
+        col_fill    = _rgba_to_u32(*_c.progress_fill)     if _c else 0xBB2D5FAA
+        col_cursor  = _rgba_to_u32(*_c.progress_cursor)   if _c else 0xFFFFFFFF
+        col_shadow  = _rgba_to_u32(*_c.progress_cursor_shadow) if _c else 0xFF000000
+        col_hover   = _rgba_to_u32(*_c.progress_hover)    if _c else 0x88FFFFFF
+
         dl.add_rect_filled(
             ImVec2(ox,            oy),
             ImVec2(ox + W,        oy + BAR_H),
-            0xFF505050,
+            col_bg,
         )
 
         # 2 ── Progress fill (highlight up to cursor) ──────────────────
@@ -393,7 +418,7 @@ class OFS_VideoplayerControls:
         dl.add_rect_filled(
             ImVec2(ox,            oy),
             ImVec2(fill_x,        oy + BAR_H),
-            0xBB2D5FAA,
+            col_fill,
         )
 
         # 3 ── Heatmap overlay ──────────────────────────────────────────
@@ -457,8 +482,8 @@ class OFS_VideoplayerControls:
 
         # 6 ── Cursor line (white + dark shadow) ───────────────────────
         cx = ox + W * pct
-        dl.add_line(ImVec2(cx, oy - 1), ImVec2(cx, oy + BAR_H + 1), 0xFF000000, 3.0)
-        dl.add_line(ImVec2(cx, oy - 1), ImVec2(cx, oy + BAR_H + 1), 0xFFFFFFFF, 1.5)
+        dl.add_line(ImVec2(cx, oy - 1), ImVec2(cx, oy + BAR_H + 1), col_shadow, 3.0)
+        dl.add_line(ImVec2(cx, oy - 1), ImVec2(cx, oy + BAR_H + 1), col_cursor, 1.5)
 
         # 7 ── Invisible button for interaction ────────────────────────
         imgui.set_cursor_screen_pos(ImVec2(ox, oy))
@@ -506,7 +531,7 @@ class OFS_VideoplayerControls:
             dl.add_line(
                 ImVec2(mouse.x, oy),
                 ImVec2(mouse.x, oy + BAR_H),
-                0x88FFFFFF, 1.0,
+                col_hover, 1.0,
             )
 
             # Tooltip: thumbnail image (if available) + time label
@@ -542,9 +567,9 @@ class OFS_VideoplayerControls:
                 if imgui.begin_popup(f"##ch_ctx_tl_{i}"):
                     imgui.text_disabled(ch.name or f"Chapter {i+1}")
                     imgui.separator()
-                    if imgui.menu_item("Seek to start")[0]:
+                    if imgui.menu_item("Seek to start", "", False)[0]:
                         player.SetPositionExact(ch.start)
-                    if imgui.menu_item("Seek to end")[0]:
+                    if imgui.menu_item("Seek to end", "", False)[0]:
                         player.SetPositionExact(ch.end)
                     imgui.end_popup()
 

@@ -2,7 +2,7 @@
 PreferencesWindow — Python port of OFS_Preferences.h / OFS_Preferences.cpp
 
 Settings persisted to ~/.ofs-pyqt/preferences.json.
-Tabs: Application | Videoplayer | Scripting
+Tabs: Application | Videoplayer | Scripting | Heatmap | Colors
 """
 
 from __future__ import annotations
@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Optional, List
 
 from imgui_bundle import imgui, ImVec2
+
+from src.ui.ui_colors import UIColors, COLOR_CATEGORIES
 
 log = logging.getLogger(__name__)
 
@@ -74,6 +76,7 @@ class PreferencesWindow:
         self.heatmap_default_path:   str = ""
         self._languages: List[str] = _discover_languages()
         self._font_buf: str = ""
+        self.colors: UIColors = UIColors()
         self._load()
 
     # ──────────────────────────────────────────────────────────────────────
@@ -85,6 +88,10 @@ class PreferencesWindow:
             with open(PREFS_FILE) as f:
                 d = json.load(f)
             for k, v in d.items():
+                if k == "colors":
+                    if isinstance(v, dict):
+                        self.colors.from_dict(v)
+                    continue
                 if hasattr(self, k):
                     setattr(self, k, v)
             self._font_buf = self.font_override_path
@@ -94,7 +101,8 @@ class PreferencesWindow:
     def _save(self) -> None:
         PREFS_FILE.parent.mkdir(parents=True, exist_ok=True)
         d = {k: v for k, v in self.__dict__.items()
-             if not k.startswith("_")}
+             if not k.startswith("_") and k != "colors"}
+        d["colors"] = self.colors.to_dict()
         try:
             with open(PREFS_FILE, "w") as f:
                 json.dump(d, f, indent=2)
@@ -139,6 +147,12 @@ class PreferencesWindow:
             if imgui.begin_tab_item("Heatmap")[0]:
                 dirty |= self._tab_heatmap()
                 imgui.end_tab_item()
+
+            # ── Tab: Colors ────────────────────────────────────────────
+            if imgui.begin_tab_item("Colors")[0]:
+                dirty |= self._tab_colors()
+                imgui.end_tab_item()
+
             imgui.end_tab_bar()
 
         imgui.spacing()
@@ -327,14 +341,14 @@ class PreferencesWindow:
             if imgui.is_item_hovered():
                 imgui.set_tooltip(
                     "Speed above this threshold is shown in red on the heatmap")
-            # MaxSpeedColor picker
+            # MaxSpeedColor picker (backed by UIColors)
             imgui.set_next_item_width(200)
-            col4 = list(self.max_speed_color)
+            col4 = list(self.colors.max_speed_highlight)
             while len(col4) < 4:
                 col4.append(1.0)
             c, new_col = imgui.color_edit4("Max speed colour##msc", col4)
             if c:
-                self.max_speed_color = list(new_col)
+                self.colors.max_speed_highlight = list(new_col)
                 dirty = True
         imgui.spacing()
 
@@ -351,14 +365,14 @@ class PreferencesWindow:
                 dirty = True
             if imgui.is_item_hovered():
                 imgui.set_tooltip("Vertically scale the waveform amplitude (1.0 = normal)")
-            # WaveformColor tint picker
+            # WaveformColor tint picker (backed by UIColors)
             imgui.set_next_item_width(200)
-            col4w = list(self.waveform_color)
+            col4w = list(self.colors.waveform_tint)
             while len(col4w) < 4:
                 col4w.append(1.0)
             c, new_wc = imgui.color_edit4("Waveform colour##wvcol", col4w)
             if c:
-                self.waveform_color = list(new_wc)
+                self.colors.waveform_tint = list(new_wc)
                 dirty = True
         imgui.spacing()
 
@@ -387,4 +401,51 @@ class PreferencesWindow:
             dirty = True
         if imgui.is_item_hovered():
             imgui.set_tooltip("Leave empty to use the project folder")
+        return dirty
+
+    def _tab_colors(self) -> bool:
+        """Full colour table with category headers and RGBA pickers."""
+        dirty = False
+        colors = self.colors
+
+        # Reset all colours button
+        if imgui.button("Reset all colours"):
+            colors.reset()
+            dirty = True
+        imgui.same_line()
+        imgui.text_disabled("(?)")
+        if imgui.is_item_hovered():
+            imgui.set_tooltip(
+                "Reset every colour in the table to factory defaults.\n"
+                "Click Save at the bottom of the window to persist changes."
+            )
+        imgui.spacing()
+        imgui.separator()
+
+        # Scrollable child region for the colour table
+        avail = imgui.get_content_region_avail()
+        if imgui.begin_child("##color_scroll", ImVec2(0, avail.y - 4), imgui.ChildFlags_.none):
+            for cat_name, entries in COLOR_CATEGORIES:
+                # Collapsible header per category
+                if imgui.collapsing_header(cat_name, imgui.TreeNodeFlags_.default_open):
+                    for field_name, label in entries:
+                        val = getattr(colors, field_name, None)
+                        if val is None:
+                            continue
+                        col4 = list(val)
+                        while len(col4) < 4:
+                            col4.append(1.0)
+                        imgui.set_next_item_width(220)
+                        c, new_col = imgui.color_edit4(
+                            f"{label}##{field_name}",
+                            col4,
+                            imgui.ColorEditFlags_.alpha_bar
+                            | imgui.ColorEditFlags_.alpha_preview_half,
+                        )
+                        if c:
+                            setattr(colors, field_name, list(new_col))
+                            dirty = True
+                    imgui.spacing()
+            imgui.end_child()
+
         return dirty

@@ -135,6 +135,9 @@ class SimulatorWindow:
         self._vanilla_mode:        bool = False
         self._spline_mode:         bool = False   # Use Catmull-Rom spline interpolation
 
+        # Shared colour table (set via set_colors; overrides sim colours)
+        self._ui_colors = None
+
         # Dragging state
         self._dragging: Optional[str]  = None   # 'p1' | 'p2' | 'both' | None
         self._drag_start_p1: List[float] = [0.0, 0.0]
@@ -145,6 +148,26 @@ class SimulatorWindow:
         self.mouse_on_sim:     bool  = False
 
         self._load_config()
+
+    # ──────────────────────────────────────────────────────────────────────
+    # UIColors integration
+    # ──────────────────────────────────────────────────────────────────────
+
+    def set_colors(self, colors) -> None:
+        """Wire the shared UIColors table.  Overrides sim colours each frame."""
+        self._ui_colors = colors
+
+    def _sync_colors_from_ui(self) -> None:
+        """Apply global UIColors to this simulator's colour fields."""
+        c = self._ui_colors
+        if c is None:
+            return
+        self._col_text        = list(c.sim_text)
+        self._col_border      = list(c.sim_border)
+        self._col_front       = list(c.sim_front)
+        self._col_back        = list(c.sim_back)
+        self._col_indicator   = list(c.sim_indicator)
+        self._col_extra_lines = list(c.sim_extra_lines)
 
     # ──────────────────────────────────────────────────────────────────────
     # Config persistence
@@ -204,6 +227,7 @@ class SimulatorWindow:
         if not self._initialized:
             self._center_simulator()
             self._initialized = True
+        self._sync_colors_from_ui()
 
         # ── Vanilla mode: simple read-only VSlider ─────────────────────
         if self._vanilla_mode:

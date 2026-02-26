@@ -79,6 +79,9 @@ class SpecialFunctionsWindow:
         if not visible:
             return False
         open_flag = True
+        imgui.set_next_window_size_constraints(
+            ImVec2(270, 0), ImVec2(450, 800)
+        )
         opened, open_flag = imgui.begin(
             "Special Functions###SpecFuncs",
             open_flag,
@@ -118,24 +121,26 @@ class SpecialFunctionsWindow:
         imgui.text_disabled("Stretch strokes outward (+) or compress (-)")
         imgui.spacing()
 
-        imgui.set_next_item_width(-60)
+        imgui.set_next_item_width(190)
+
+        changed, new_val = imgui.slider_int(
+            "##range_ext", self._range_extend, -50, 100, "%d%%")
 
         # Detect drag-start: take a snapshot *once* so the whole live-drag
         # collapses into a single undo entry.
+        # NOTE: is_item_activated / is_item_deactivated must come AFTER the
+        # widget they refer to (they query the *last* item).
         if imgui.is_item_activated():
             if has_sel and script:
                 undo.Snapshot(StateType.RANGE_EXTEND, script)
             self._range_drag_active = True
-
-        changed, new_val = imgui.slider_int(
-            "##range_ext", self._range_extend, -50, 100, "%d%%")
 
         if imgui.is_item_deactivated():
             self._range_drag_active = False
 
         if changed and has_sel and script:
             # Undo before re-applying so every tick stays as one undo step
-            undo.Undo(script)
+            undo.Undo()
             undo.Snapshot(StateType.RANGE_EXTEND, script)
             script.RangeExtendSelection(new_val)
             self._range_extend = new_val
@@ -174,7 +179,7 @@ class SpecialFunctionsWindow:
                 "Epsilon is scaled by the average inter-action distance.\n"
                 "Larger value = more aggressive simplification.")
 
-        if imgui.button("Simplify selection##rdp", ImVec2(-1, 0)) and has_sel:
+        if imgui.button("Simplify selection##rdp", ImVec2(0, 0)) and has_sel:
             self._do_rdp(script, undo)
         if not has_sel:
             self._disabled_hint()

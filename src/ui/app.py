@@ -50,6 +50,7 @@ from src.ui.panels.preferences       import PreferencesWindow
 from src.ui.panels.chapter_manager   import ChapterManagerWindow
 from src.ui.panels.metadata_editor   import MetadataEditorWindow
 from src.ui.panels.track_info         import TrackInfoWindow
+from src.ui.panels.launch_wizard       import LaunchWizard
 from src.ui.app_state    import OFS_Status, AUTO_BACKUP_INTERVAL, FUNSCRIPT_AXIS_NAMES
 from src.ui.app_editing  import EditingCommandsMixin
 from src.ui.app_keybindings import KeybindingsMixin
@@ -94,12 +95,13 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         self.chapter_mgr     = ChapterManagerWindow()
         self.metadata_editor = MetadataEditorWindow()
         self.track_info      = TrackInfoWindow()
+        self.launch_wizard   = LaunchWizard(str(Path.home() / ".ofs-pyqt"))
 
         # State
         self.status: int         = OFS_Status.NONE
         self.copied_selection: List[FunscriptAction] = []
         self._last_backup: float = time.monotonic()
-        self.recent_files: List[str] = []
+        self.recent_files: List[str] = self.launch_wizard._recent_files
 
         # Unsaved-edits timer (for menu bar alert)
         self._unsaved_since: float = 0.0   # monotonic sec when unsaved edits began
@@ -349,10 +351,16 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         # Init scripting mode
         self.scripting.Init(self.player, self.undo_system)
         self.scripting.SetActiveGetter(self._active)
+        self.scripting.SetTimelineManager(self.timeline_mgr)
 
         # Init timeline
         self.script_timeline.Init()
         self.script_timeline.waveform = self.waveform
+        self.script_timeline.set_colors(self.preferences.colors)
+
+        # Wire shared colour table into sub-components
+        self.player_controls.set_colors(self.preferences.colors)
+        self.simulator.set_colors(self.preferences.colors)
 
         # Init timeline manager (DAW-mode transport controller)
         self.timeline_mgr.SetPlayer(self.player)
@@ -417,9 +425,12 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         if self._ws_active:
             self.web_api.Start()
 
-        # Load CLI file or recent
+        # Load CLI file or show launch wizard
         if self._cli_file:
             self.OpenFile(self._cli_file)
+        elif self.launch_wizard.show_at_startup:
+            self.launch_wizard.SetRecentFiles(self.recent_files)
+            self.launch_wizard.Open()
 
         log.info("_post_init: complete")
 
@@ -477,11 +488,10 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         ):
             self.waveform.load_async(self.player.VideoPath())
         # Sync preferences into ScriptTimeline render flags each frame
+        # (Colour values are synced by script_timeline._refresh_colors() from UIColors)
         self.script_timeline.show_max_speed_highlight = self.preferences.highlight_max_speed
         self.script_timeline.max_speed_threshold      = self.preferences.max_speed_highlight
-        self.script_timeline.max_speed_color          = tuple(self.preferences.max_speed_color)
         self.script_timeline.waveform_scale           = self.preferences.waveform_scale
-        self.script_timeline.waveform_color           = tuple(self.preferences.waveform_color)
 
         # Sync overlay mode + params from ScriptingMode → ScriptTimeline
         sc = self.scripting
@@ -539,6 +549,95 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         self._draw_remove_confirm()
         self._draw_close_confirm()
         self._draw_axis_wizard()
+        # Launch wizard
+        self.launch_wizard.Show()
+        self._process_wizard_result()
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Launch wizard result handler
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _process_wizard_result(self) -> None:
+        """Check if the launch wizard has a confirmed action and execute it."""
+        action, path = self.launch_wizard.ConsumeResult()
+        if action is None:
+            return
+
+        if action == "new":
+            # path is the project name (no directory yet)
+            self._wizard_new_project(path)
+        elif action == "recent":
+            if path and os.path.exists(path):
+                self.OpenFile(path)
+            else:
+                self._alert("File not found", f"Could not find:\n{path}")
+        elif action == "template":
+            self._wizard_open_template(path)
+        elif action == "open":
+            if path:
+                self.OpenFile(path)
+
+    def _wizard_new_project(self, name: str) -> None:
+        """Create a new empty project with the given name via Save dialog."""
+        try:
+            from imgui_bundle import portable_file_dialogs as pfd
+            result = pfd.save_file(
+                "Save new project",
+                name + ".ofsp",
+                ["OFS Project", "*.ofsp"],
+            ).result()
+            if not result:
+                return
+            path = result
+            if not path.endswith(".ofsp"):
+                path += ".ofsp"
+        except ImportError:
+            log.warning("portable_file_dialogs not available")
+            return
+
+        # Close current
+        self.project.reset()
+        self._destroy_all_pool_players()
+        self.player.CloseVideo()
+        from src.core.timeline import Timeline
+        self.timeline_mgr.timeline = Timeline()
+
+        # Init empty project at chosen path
+        self.project._path = path
+        self.project._valid = True
+        self.project.Save()
+        if path not in self.recent_files:
+            self.recent_files.append(path)
+
+        # Build empty timeline
+        self.timeline_mgr.SetProject(self.project)
+        self.timeline_mgr.BuildFromProject()
+        self._update_title()
+        log.info(f"Wizard: new project created: {path}")
+
+    def _wizard_open_template(self, template_path: str) -> None:
+        """Create a new project from a template — copy then open."""
+        if not os.path.exists(template_path):
+            self._alert("Template not found", template_path)
+            return
+        try:
+            from imgui_bundle import portable_file_dialogs as pfd
+            import shutil
+            result = pfd.save_file(
+                "Save project from template",
+                Path(template_path).stem + ".ofsp",
+                ["OFS Project", "*.ofsp"],
+            ).result()
+            if not result:
+                return
+            dest = result
+            if not dest.endswith(".ofsp"):
+                dest += ".ofsp"
+            shutil.copy2(template_path, dest)
+            self.OpenFile(dest)
+            log.info(f"Wizard: created project from template {template_path} → {dest}")
+        except ImportError:
+            log.warning("portable_file_dialogs not available")
 
     def _after_swap(self) -> None:
         """Called after SDL_GL_SwapWindow."""
@@ -559,6 +658,8 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         """Tear down all subsystems. Mirrors ``OpenFunscripter::Shutdown``."""
         log.info("Shutdown")
         self._save_app_state()
+        self.launch_wizard.SetRecentFiles(self.recent_files)
+        self.launch_wizard.SaveRecentFiles()
         kb_path = Path.home() / ".ofs-pyqt" / "keybindings.json"
         kb_path.parent.mkdir(parents=True, exist_ok=True)
         self.keys.Save(kb_path)

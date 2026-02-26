@@ -328,7 +328,7 @@ class ChapterManagerWindow:
 
                 # Right-click context menu on the entire row for export
                 if imgui.begin_popup_context_item(f"##ctx{i}"):
-                    if imgui.menu_item("Export Clip")[0]:
+                    if imgui.menu_item("Export Clip", "", False)[0]:
                         vp = player.VideoPath() if player.VideoLoaded() else ""
                         if vp and not self._export_busy:
                             self._export_busy = True

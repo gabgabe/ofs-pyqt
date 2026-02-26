@@ -131,6 +131,7 @@ class ScriptingMode:
         self._player: Optional[OFS_Videoplayer] = None
         self._undo:   Optional[UndoSystem]      = None
         self._script: Optional[Funscript]       = None
+        self._timeline_mgr = None  # set via SetTimelineManager()
 
         # Funscript reference (set by app via active_funscript)
         self._active_getter = lambda: None
@@ -145,6 +146,18 @@ class ScriptingMode:
     def SetActiveGetter(self, fn) -> None:
         """Set the callable that returns the currently active Funscript."""
         self._active_getter = fn
+
+    def SetTimelineManager(self, mgr) -> None:
+        """Wire timeline manager for transport-level stepping and timing."""
+        self._timeline_mgr = mgr
+
+    def _current_time(self) -> float:
+        """Current time in seconds — prefers transport position over player."""
+        if self._timeline_mgr is not None:
+            return self._timeline_mgr.CurrentTime()
+        if self._player:
+            return self._player.CurrentTime()
+        return 0.0
 
     def _active(self) -> Optional[Funscript]:
         return self._active_getter()
@@ -271,7 +284,10 @@ class ScriptingMode:
 
         # Auto-advance in normal / alternating modes
         if self.mode in (ScriptingModeEnum.NORMAL, ScriptingModeEnum.ALTERNATING):
-            self._player.SeekFrames(self._step_size)
+            if self._timeline_mgr is not None:
+                self._timeline_mgr.StepFrames(self._step_size)
+            elif self._player:
+                self._player.SeekFrames(self._step_size)
 
     def _apply_alternating(self, script: "Funscript", action: FunscriptAction) -> FunscriptAction:
         """Compute the overridden position for AlternatingMode."""
@@ -328,7 +344,7 @@ class ScriptingMode:
         if not self._rec_has_pos:
             return
 
-        t = self._player.CurrentTime()
+        t = self._current_time()
 
         if self._rec_type == 0:  # HoldSample — continuous at _rec_interval_s
             if abs(t - self._rec_last_at) < self._rec_interval_s:
@@ -593,9 +609,12 @@ class ScriptingMode:
                 if player and player.VideoLoaded():
                     # snap playhead to nearest overridden frame
                     ft = 1.0 / self._frame_fps_value
-                    t = player.CurrentTime()
+                    t = self._current_time()
                     snapped = round(t / ft) * ft
-                    player.SetPositionExact(snapped, True)
+                    if self._timeline_mgr is not None:
+                        self._timeline_mgr.Seek(snapped)
+                    else:
+                        player.SetPositionExact(snapped, True)
         if imgui.is_item_hovered():
             imgui.set_tooltip("Override the video FPS for frame-stepping")
 

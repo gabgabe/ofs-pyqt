@@ -49,6 +49,10 @@ class MenuBarMixin:
 
         # ── FILE ──────────────────────────────────────────────────────────
         if imgui.begin_menu("File"):
+            if imgui.menu_item("Project Wizard...", "", False)[0]:
+                self.launch_wizard.SetRecentFiles(self.recent_files)
+                self.launch_wizard.Open()
+            imgui.separator()
             if imgui.menu_item("New project", "Ctrl+N", False)[0]:
                 self.NewProject()
             if imgui.menu_item("Open...", "Ctrl+O", False)[0]:
