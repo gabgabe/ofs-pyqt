@@ -1,5 +1,5 @@
 """
-Tempo / beat subdivision constants — shared between ScriptTimeline and ScriptingMode.
+Tempo / beat subdivision constants  --  shared between ScriptTimeline and ScriptingMode.
 
 Mirrors ``OFS::beatMultiples[]`` / ``OFS::beatMultipleColor[]`` from ``BaseOverlayState.h``.
 """
@@ -26,7 +26,7 @@ BEAT_NAMES: list[str] = [
     "12ths", "16ths", "24ths", "32nds", "48ths", "64ths",
 ]
 
-# Colours per subdivision (RGBA 0–1 tuples, OFS beatMultipleColor[]).
+# Colours per subdivision (RGBA 0-1 tuples, OFS beatMultipleColor[]).
 # Converted to imgui u32 by consumers as needed.
 BEAT_COLORS_RGBA: list[tuple[float, float, float, float]] = [
     (0xBB / 255, 0xBE / 255, 0xBC / 255, 1.0),  # whole measures

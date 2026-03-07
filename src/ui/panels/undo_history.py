@@ -1,5 +1,5 @@
 """
-UndoHistoryWindow — Python port of OFS_UndoSystem UI.
+UndoHistoryWindow  --  Python port of OFS_UndoSystem UI.
 
 Shows a scrollable list of undo/redo entries with their state names.
 Current undo-pointer highlighted. Click to jump to state (not yet implemented
@@ -21,7 +21,7 @@ class UndoHistoryWindow:
     def __init__(self) -> None:
         self._auto_scroll: bool = True
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def Show(self, undo: UndoSystem) -> None:
         """Render the undo-history list. Mirrors ``OFS_UndoSystem::ShowUndoRedoHistory``."""
@@ -39,7 +39,7 @@ class UndoHistoryWindow:
             cur_idx = len(undo_stack)
             total   = len(undo_stack) + len(redo_stack)
 
-            # Draw undo entries (oldest → newest)
+            # Draw undo entries (oldest -> newest)
             for i, entry in enumerate(undo_stack):
                 stype = entry.state_type
                 name  = state_label(stype)
@@ -57,7 +57,7 @@ class UndoHistoryWindow:
 
             # Current position marker
             imgui.push_style_color(imgui.Col_.text, ImVec4(1.0, 1.0, 0.2, 1.0))
-            imgui.text("─── now ───")
+            imgui.text("--- now ---")
             imgui.pop_style_color()
 
             # Redo entries

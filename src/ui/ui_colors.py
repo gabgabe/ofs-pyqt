@@ -1,5 +1,5 @@
 """
-UIColors — centralised colour table for the entire application.
+UIColors  --  centralised colour table for the entire application.
 
 Every hardcoded colour in the UI is catalogued here as a named field with
 sensible defaults that match the original OFS look.  Preferences can
@@ -25,13 +25,13 @@ RGBA = Tuple[float, float, float, float]
 
 
 def _rgba(r: float, g: float, b: float, a: float = 1.0) -> List[float]:
-    """Convenience — returns a mutable list (needed for JSON round-trip)."""
+    """Convenience  --  returns a mutable list (needed for JSON round-trip)."""
     return [r, g, b, a]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Category helpers — purely for the preferences tab grouping
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# Category helpers  --  purely for the preferences tab grouping
+# -----------------------------------------------------------------------------
 
 # (field_name, display_label) tuples grouped by category.
 # The preferences tab iterates these.
@@ -148,10 +148,10 @@ class UIColors:
 
     def reset(self) -> None:
         """Restore all colours to factory defaults."""
-        # ── Timeline Background ──────────────────────────────────────────
+        # -- Timeline Background ------------------------------------------
         self.timeline_bg:               List[float] = _rgba(0.10, 0.10, 0.10, 1.00)
 
-        # ── Actions & Lines ──────────────────────────────────────────────
+        # -- Actions & Lines ----------------------------------------------
         self.action_dot:                List[float] = _rgba(0.30, 0.70, 0.30, 1.00)
         self.action_dot_selected:       List[float] = _rgba(0.02, 0.99, 0.01, 1.00)
         self.action_dot_selected_ring:  List[float] = _rgba(1.00, 1.00, 1.00, 0.95)
@@ -161,13 +161,13 @@ class UIColors:
         self.inactive_track_dot:        List[float] = _rgba(0.50, 0.50, 0.50, 0.60)
         self.inactive_track_line:       List[float] = _rgba(0.50, 0.50, 0.50, 0.30)
 
-        # ── Playhead & Selection ─────────────────────────────────────────
+        # -- Playhead & Selection -----------------------------------------
         self.playhead:                  List[float] = _rgba(1.00, 1.00, 1.00, 1.00)
         self.playhead_shadow:           List[float] = _rgba(0.00, 0.00, 0.00, 0.50)
         self.selection_rect:            List[float] = _rgba(0.01, 0.99, 0.81, 0.39)
         self.selection_rect_border:     List[float] = _rgba(0.01, 0.99, 0.81, 0.90)
 
-        # ── Track Gradients & Borders ────────────────────────────────────
+        # -- Track Gradients & Borders ------------------------------------
         self.active_track_top:          List[float] = _rgba(60/255, 0, 60/255, 1.0)
         self.active_track_bottom:       List[float] = _rgba(24/255, 0, 24/255, 1.0)
         self.inactive_track_top:        List[float] = _rgba(0, 0, 50/255, 1.0)
@@ -179,24 +179,24 @@ class UIColors:
         self.track_title_active:        List[float] = _rgba(0.8, 0.8, 0.8, 0.7)
         self.track_title_inactive:      List[float] = _rgba(0.8, 0.8, 0.8, 0.4)
 
-        # ── Speed-Based Line Colours ─────────────────────────────────────
+        # -- Speed-Based Line Colours -------------------------------------
         self.speed_high:                List[float] = _rgba(0.89, 0.26, 0.20, 1.00)
         self.speed_mid:                 List[float] = _rgba(0.91, 0.84, 0.35, 1.00)
         self.speed_low:                 List[float] = _rgba(0.97, 0.40, 0.22, 1.00)
 
-        # ── Overlays ────────────────────────────────────────────────────
+        # -- Overlays ----------------------------------------------------
         self.sync_line:                 List[float] = _rgba(1.0, 0.2, 0.2, 0.8)
         self.max_speed_highlight:       List[float] = _rgba(0.89, 0.10, 0.10, 0.55)
         self.waveform_tint:             List[float] = _rgba(227/255, 66/255, 52/255, 0.42)
 
-        # ── Guides & Grid ───────────────────────────────────────────────
+        # -- Guides & Grid -----------------------------------------------
         self.height_guide:              List[float] = _rgba(0.30, 0.30, 0.30, 0.50)
         self.frame_tick:                List[float] = _rgba(80/255, 80/255, 80/255, 1.0)
         self.tempo_subdivision:         List[float] = _rgba(1.0, 1.0, 1.0, 0.60)
         self.tempo_measure_label:       List[float] = _rgba(0.9, 0.9, 0.9, 0.8)
         self.seconds_label:             List[float] = _rgba(0.7, 0.7, 0.7, 1.0)
         self.daw_grid_line:             List[float] = _rgba(0.40, 0.40, 0.40, 0.35)
-        # ── DAW Mode ────────────────────────────────────────────────────
+        # -- DAW Mode ----------------------------------------------------
         self.daw_bg:                    List[float] = _rgba(0.08, 0.08, 0.08, 1.00)
         self.daw_layer_alt:             List[float] = _rgba(0.12, 0.12, 0.12, 1.00)
         self.daw_layer_border:          List[float] = _rgba(0.25, 0.25, 0.25, 0.60)
@@ -214,12 +214,12 @@ class UIColors:
         self.daw_scrollbar:             List[float] = _rgba(1.0, 1.0, 1.0, 0.25)
         self.daw_trigger_marker:        List[float] = _rgba(1.0, 0.8, 0.2, 0.9)
 
-        # ── Heatmap ─────────────────────────────────────────────────────
+        # -- Heatmap -----------------------------------------------------
         self.heatmap_cold:              List[float] = _rgba(0x11/255, 0x11/255, 0xFF/255, 1.0)
         self.heatmap_warm:              List[float] = _rgba(0x11/255, 0xFF/255, 0x11/255, 1.0)
         self.heatmap_hot:               List[float] = _rgba(0xFF/255, 0x44/255, 0x11/255, 1.0)
 
-        # ── Simulator ───────────────────────────────────────────────────
+        # -- Simulator ---------------------------------------------------
         self.sim_text:                  List[float] = _rgba(1.0, 1.0, 1.0, 1.0)
         self.sim_border:                List[float] = _rgba(0.8, 0.8, 0.8, 1.0)
         self.sim_front:                 List[float] = _rgba(0.18, 0.80, 0.18, 1.0)
@@ -227,16 +227,16 @@ class UIColors:
         self.sim_indicator:             List[float] = _rgba(0.95, 0.75, 0.10, 1.0)
         self.sim_extra_lines:           List[float] = _rgba(0.50, 0.50, 0.50, 0.60)
 
-        # ── Progress Bar ────────────────────────────────────────────────
+        # -- Progress Bar ------------------------------------------------
         self.progress_bg:               List[float] = _rgba(0x50/255, 0x50/255, 0x50/255, 1.0)
         self.progress_fill:             List[float] = _rgba(0xAA/255, 0x5F/255, 0x2D/255, 0xBB/255)
         self.progress_cursor:           List[float] = _rgba(1.0, 1.0, 1.0, 1.0)
         self.progress_cursor_shadow:    List[float] = _rgba(0.0, 0.0, 0.0, 1.0)
         self.progress_hover:            List[float] = _rgba(1.0, 1.0, 1.0, 0x88/255)
 
-    # ─────────────────────────────────────────────────────────────────────
+    # ---------------------------------------------------------------------
     # Helpers
-    # ─────────────────────────────────────────────────────────────────────
+    # ---------------------------------------------------------------------
 
     def c(self, name: str) -> Tuple[float, float, float, float]:
         """Return colour *name* as an immutable (R, G, B, A) tuple."""
@@ -252,9 +252,9 @@ class UIColors:
                 names.append(field_name)
         return names
 
-    # ─────────────────────────────────────────────────────────────────────
+    # ---------------------------------------------------------------------
     # Serialisation
-    # ─────────────────────────────────────────────────────────────────────
+    # ---------------------------------------------------------------------
 
     def to_dict(self) -> Dict[str, List[float]]:
         """Serialise all colours to a JSON-friendly dict."""

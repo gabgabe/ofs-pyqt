@@ -1,5 +1,5 @@
 """
-ActionEditorWindow — Python port of OFS_ActionEditor (action numeric buttons).
+ActionEditorWindow  --  Python port of OFS_ActionEditor (action numeric buttons).
 
 Shows a grid of position-labelled buttons (0..100 in configurable steps).
 Clicking a button inserts/edits an action at the current time with that position.
@@ -26,7 +26,7 @@ class ActionEditorWindow:
         self._step: int  = 10   # default step between buttons
         self._show_grid: bool = True
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def Show(
         self,
@@ -128,7 +128,7 @@ class ActionEditorWindow:
             closest = script.GetActionAtTime(local_t, ft)
             if closest:
                 imgui.text(
-                    f"Nearest action: {closest.at} ms  →  {closest.pos}"
+                    f"Nearest action: {closest.at} ms  ->  {closest.pos}"
                 )
             else:
                 imgui.text_disabled("No action at current time")

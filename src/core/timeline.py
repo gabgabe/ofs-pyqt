@@ -1,5 +1,5 @@
 """
-Global Timeline Model — multi-track, multi-layer DAW-style timeline.
+Global Timeline Model  --  multi-track, multi-layer DAW-style timeline.
 
 Architecture
 ============
@@ -11,28 +11,28 @@ can be muted / soloed).
 Hierarchy::
 
     Timeline
-      ├── Transport          (position, play/pause, speed)
-      ├── Layer 0  "Video"
-      │     └── Track        (type=VIDEO,  offset=0.0, data → VideoTrackData)
-      ├── Layer 1  "main"
-      │     └── Track        (type=FUNSCRIPT, offset=0.0, data → FunscriptTrackData)
-      ├── Layer 2  "surge"
-      │     └── Track        (type=FUNSCRIPT, offset=2.5, data → FunscriptTrackData)
-      ├── Layer 3  "triggers"
-      │     └── Track        (type=TRIGGER, offset=10.0, data → TriggerTrackData)
-      └── …
+      +-- Transport          (position, play/pause, speed)
+      +-- Layer 0  "Video"
+      |     +-- Track        (type=VIDEO,  offset=0.0, data -> VideoTrackData)
+      +-- Layer 1  "main"
+      |     +-- Track        (type=FUNSCRIPT, offset=0.0, data -> FunscriptTrackData)
+      +-- Layer 2  "surge"
+      |     +-- Track        (type=FUNSCRIPT, offset=2.5, data -> FunscriptTrackData)
+      +-- Layer 3  "triggers"
+      |     +-- Track        (type=TRIGGER, offset=10.0, data -> TriggerTrackData)
+      +-- ...
 
 Key concepts
 ------------
-* **Transport** — the single source of truth for playback position.
+* **Transport**  --  the single source of truth for playback position.
   Video players slave to the transport (not the other way round).
-* **Track** — a clip that occupies [offset .. offset+duration] on the
+* **Track**  --  a clip that occupies [offset .. offset+duration] on the
   timeline.  It can be dragged horizontally (offset changes).
-* **Layer** — a horizontal row.  Multiple tracks can live in the same
-  layer (but must not overlap — enforced at insert time).  Each layer
+* **Layer**  --  a horizontal row.  Multiple tracks can live in the same
+  layer (but must not overlap  --  enforced at insert time).  Each layer
   has a *mute* flag.
-* **TrackType** — VIDEO, FUNSCRIPT, TRIGGER (extensible enum).
-* **Duration** — for a Funscript track the duration expands
+* **TrackType**  --  VIDEO, FUNSCRIPT, TRIGGER (extensible enum).
+* **Duration**  --  for a Funscript track the duration expands
   automatically when new actions are added beyond the current end, with
   a configurable margin so there's always drawing room.  For an imported
   funscript the initial duration equals the last action's timestamp.
@@ -73,9 +73,10 @@ def snap_to_frame(t: float, fps: float) -> float:
 
 class TrackType(IntEnum):
     """Extensible track-type enum."""
-    VIDEO      = 0
-    FUNSCRIPT  = 1
-    TRIGGER    = 2      # OSC / HTTP / custom trigger data
+    VIDEO        = 0
+    FUNSCRIPT    = 1
+    TRIGGER      = 2      # OSC / HTTP / custom trigger data
+    CONTROL_CUE  = 3      # one-shot command markers (parameter, OSC, WS, mode)
 
 
 # ---------------------------------------------------------------------------
@@ -190,32 +191,33 @@ class Track:
     """
     name: str = ""
     track_type: TrackType = TrackType.FUNSCRIPT
-    offset: float = 0.0              # global seconds — horizontal position
+    offset: float = 0.0              # global seconds  --  horizontal position
     duration: float = 60.0           # length in seconds
     color: Tuple[float, ...] = (0.55, 0.27, 0.68, 1.0)
 
     # Trim points (media-local seconds).  Used mainly for VIDEO tracks.
     # *media_duration* stores the full untrimmed source duration.
     trim_in: float = 0.0
-    trim_out: float = 0.0            # 0 means "not set" → uses *duration*
-    media_duration: float = 0.0      # full source duration (0 → not set)
+    trim_out: float = 0.0            # 0 means "not set" -> uses *duration*
+    media_duration: float = 0.0      # full source duration (0 -> not set)
 
-    # Typed payload — exactly one should be set depending on track_type
+    # Typed payload  --  exactly one should be set depending on track_type
     video_data: Optional[VideoTrackData] = None
     funscript_data: Optional[FunscriptTrackData] = None
     trigger_data: Optional[TriggerTrackData] = None
+    control_cue_data: Optional["ControlCueTrackData"] = None
 
     # Unique id (auto-generated)
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
 
-    # ── Computed ──────────────────────────────────────────────────────
+    # -- Computed ------------------------------------------------------
 
     @property
     def end(self) -> float:
         """Global end time of this track."""
         return self.offset + self.duration
 
-    # ── Trim helpers ──────────────────────────────────────────────────
+    # -- Trim helpers --------------------------------------------------
 
     def ApplyTrim(self, new_in: float, new_out: float) -> None:
         """Set trim in/out and update *duration* accordingly."""
@@ -225,10 +227,10 @@ class Track:
         self.duration = self.trim_out - self.trim_in
 
     def GlobalToMedia(self, global_t: float) -> float:
-        """Convert global transport time → media-local time (respecting trim_in)."""
+        """Convert global transport time -> media-local time (respecting trim_in)."""
         return (global_t - self.offset) + self.trim_in
 
-    # ── Time conversion ───────────────────────────────────────────────
+    # -- Time conversion -----------------------------------------------
 
     def GlobalToLocal(self, global_t: float) -> float:
         """Convert global transport time to track-local time."""
@@ -242,7 +244,7 @@ class Track:
         """True if *global_t* falls within this track's extent."""
         return self.offset <= global_t <= self.end
 
-    # ── Serialisation ─────────────────────────────────────────────────
+    # -- Serialisation -------------------------------------------------
 
     def to_dict(self) -> dict:
         d: dict = {
@@ -262,6 +264,8 @@ class Track:
             d["funscript_data"] = self.funscript_data.to_dict()
         if self.trigger_data:
             d["trigger_data"] = self.trigger_data.to_dict()
+        if self.control_cue_data:
+            d["control_cue_data"] = self.control_cue_data.to_dict()
         return d
 
     @classmethod
@@ -284,6 +288,9 @@ class Track:
             t.funscript_data = FunscriptTrackData.from_dict(d["funscript_data"])
         if "trigger_data" in d:
             t.trigger_data = TriggerTrackData.from_dict(d["trigger_data"])
+        if "control_cue_data" in d:
+            from src.core.control_cue import ControlCueTrackData
+            t.control_cue_data = ControlCueTrackData.from_dict(d["control_cue_data"])
         return t
 
 
@@ -309,7 +316,7 @@ class Layer:
         if self._anim_height == 0.0:
             self._anim_height = self.height
 
-    # ── Track management ──────────────────────────────────────────────
+    # -- Track management ----------------------------------------------
 
     def TrackAt(self, global_t: float) -> Optional[Track]:
         """Return the track occupying *global_t*, or None."""
@@ -343,7 +350,7 @@ class Layer:
                 return self.tracks.pop(i)
         return None
 
-    # ── Serialisation ─────────────────────────────────────────────────
+    # -- Serialisation -------------------------------------------------
 
     def to_dict(self) -> dict:
         return {
@@ -375,7 +382,7 @@ class Layer:
 # ---------------------------------------------------------------------------
 
 class Transport:
-    """Global transport — the master clock of the timeline.
+    """Global transport  --  the master clock of the timeline.
 
     Uses ``Decimal`` internally for tick accumulation to avoid
     floating-point drift over long sessions (Omakase pattern).
@@ -389,12 +396,12 @@ class Transport:
         self.speed: float = 1.0
         self._last_tick: float = _time.perf_counter()
         self._listeners: List[Callable[[float], None]] = []
-        # Optional frame-snap fps — when >0, Seek() snaps to frame boundaries
+        # Optional frame-snap fps  --  when >0, Seek() snaps to frame boundaries
         self.snap_fps: float = 0.0
-        # Project FPS — used for frame-stepping when outside all video tracks
+        # Project FPS  --  used for frame-stepping when outside all video tracks
         self.project_fps: float = 30.0
 
-    # ── Position property (float interface) ───────────────────────────
+    # -- Position property (float interface) ---------------------------
 
     @property
     def position(self) -> float:
@@ -404,7 +411,7 @@ class Transport:
     def position(self, value: float) -> None:
         self._position = Decimal(str(value))
 
-    # ── Controls ──────────────────────────────────────────────────────
+    # -- Controls ------------------------------------------------------
 
     @property
     def is_playing(self) -> bool:
@@ -461,7 +468,7 @@ class Transport:
         self._last_tick = _time.perf_counter()
         self._notify()
 
-    # ── Tick (call once per frame) ────────────────────────────────────
+    # -- Tick (call once per frame) ------------------------------------
 
     def Tick(self) -> None:
         """Advance the transport position if playing.
@@ -476,7 +483,7 @@ class Transport:
             self._notify()
         self._last_tick = now
 
-    # ── Listener helpers ──────────────────────────────────────────────
+    # -- Listener helpers ----------------------------------------------
 
     def OnTick(self, cb: Callable[[float], None]) -> None:
         """Register a callback invoked on every tick with the current position."""
@@ -491,7 +498,7 @@ class Transport:
 
 
 # ---------------------------------------------------------------------------
-# Timeline — top-level container
+# Timeline  --  top-level container
 # ---------------------------------------------------------------------------
 
 class Timeline:
@@ -501,7 +508,7 @@ class Timeline:
         self.transport: Transport = Transport()
         self.layers: List[Layer] = []
 
-    # ── Duration (dynamic) ────────────────────────────────────────────
+    # -- Duration (dynamic) --------------------------------------------
 
     @property
     def duration(self) -> float:
@@ -512,7 +519,7 @@ class Timeline:
                 mx = max(mx, t.end)
         return mx
 
-    # ── Layer management ──────────────────────────────────────────────
+    # -- Layer management ----------------------------------------------
 
     def AddLayer(self, name: str = "Layer") -> Layer:
         lay = Layer(name=name)
@@ -535,7 +542,7 @@ class Timeline:
                 return True
         return False
 
-    # ── Track queries ─────────────────────────────────────────────────
+    # -- Track queries -------------------------------------------------
 
     def AllTracks(self) -> List[Tuple[Layer, Track]]:
         """Return every (layer, track) pair."""
@@ -565,7 +572,12 @@ class Timeline:
         """Funscript tracks on non-muted layers."""
         return [(l, t) for l, t in self.FunscriptTracks() if not l.muted]
 
-    # ── Funscript track auto-expand ───────────────────────────────────
+    def ControlCueTracks(self) -> List[Tuple[Layer, Track]]:
+        """Return all (layer, track) pairs for CONTROL_CUE tracks."""
+        return [(l, t) for l, t in self.AllTracks()
+                if t.track_type == TrackType.CONTROL_CUE]
+
+    # -- Funscript track auto-expand -----------------------------------
 
     def ExpandFunscriptTrack(self, track: Track, local_action_t: float) -> None:
         """If *local_action_t* approaches or exceeds the track end, grow it.
@@ -580,7 +592,7 @@ class Timeline:
         if needed > track.duration:
             track.duration = needed
 
-    # ── Serialisation ─────────────────────────────────────────────────
+    # -- Serialisation -------------------------------------------------
 
     def to_dict(self) -> dict:
         return {

@@ -1,4 +1,4 @@
-"""Keybinding registration mixin — mirrors OFS ``registerBindings`` in OpenFunscripter.cpp.
+"""Keybinding registration mixin  --  mirrors OFS ``registerBindings`` in OpenFunscripter.cpp.
 
 All default key-chord assignments replicate the C++ ``KeybindingSystem`` setup
 found in ``OpenFunscripter::registerBindings``.
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 
 class KeybindingsMixin:
-    """Mixin providing ``_register_bindings()`` — extracted from OpenFunscripter.
+    """Mixin providing ``_register_bindings()``  --  extracted from OpenFunscripter.
 
     Mirrors keybinding registration in ``OpenFunscripter::registerBindings``
     (OpenFunscripter.cpp).  Groups: Actions, Core, Navigation, Utility,
@@ -35,7 +35,7 @@ class KeybindingsMixin:
         def reg(id_, fn, label, grp, chords=None, repeat=False):
             self.keys.RegisterAction(id_, fn, label, grp, chords, repeat)
 
-        # ── Actions ───────────────────────────────────────────────────────
+        # -- Actions -------------------------------------------------------
         reg_grp("Actions", "Actions")
         reg("remove_action", self.RemoveAction, "Remove action", "Actions",
             [(0, K.delete)])
@@ -46,7 +46,7 @@ class KeybindingsMixin:
             reg(f"action_{v}", lambda _v=v: self.AddEditAction(_v),
                 f"Add action {v}", "Actions", [(0, key)])
 
-        # ── Core ──────────────────────────────────────────────────────────
+        # -- Core ----------------------------------------------------------
         reg_grp("Core", "Core")
         reg("new_project",    self.NewProject,   "New project",      "Core",
             [(K.mod_ctrl, K.n)])
@@ -89,7 +89,7 @@ class KeybindingsMixin:
         reg("cycle_loaded_forward_scripts",  _cycle_fwd, "Cycle scripts forward",  "Core", [(0, K.page_down)])
         reg("cycle_loaded_backward_scripts", _cycle_bwd, "Cycle scripts backward", "Core", [(0, K.page_up)])
 
-        # ── Navigation ────────────────────────────────────────────────────
+        # -- Navigation ----------------------------------------------------
         reg_grp("Navigation", "Navigation")
 
         def _prev_action():
@@ -122,7 +122,7 @@ class KeybindingsMixin:
 
         def _prev_action_multi():
             """Mirrors OFS prev_action_multi: navigate to nearest action BEHIND
-            the cursor across ALL loaded scripts (Ctrl+↓)."""
+            the cursor across ALL loaded scripts (Ctrl+v)."""
             scripts = self.project.funscripts
             if not scripts:
                 return
@@ -141,7 +141,7 @@ class KeybindingsMixin:
 
         def _next_action_multi():
             """Mirrors OFS next_action_multi: navigate to nearest action AHEAD
-            of the cursor across ALL loaded scripts (Ctrl+↑)."""
+            of the cursor across ALL loaded scripts (Ctrl+^)."""
             scripts = self.project.funscripts
             if not scripts:
                 return
@@ -165,10 +165,10 @@ class KeybindingsMixin:
             "Next action (all scripts)", "Navigation",
             [(K.mod_ctrl, K.up_arrow, True)], repeat=True)
 
-        # ── Frame stepping (arrows) ────────────────────────────────────
+        # -- Frame stepping (arrows) ------------------------------------
         # Single press:     arrow = 1 frame,  Ctrl+arrow = 5 frames
         # Long press (held): arrow = continuous at framerate/2,
-        #                    Ctrl+arrow = continuous at 2× framerate
+        #                    Ctrl+arrow = continuous at 2x framerate
         #
         # Steps are now **transport-level**: the transport position is
         # moved by n/fps seconds and Tick() slaves the video player.
@@ -179,7 +179,7 @@ class KeybindingsMixin:
 
         import time as _kb_time
 
-        # State for long-press detection — shared between fwd / bwd / ctrl
+        # State for long-press detection  --  shared between fwd / bwd / ctrl
         _arrow_press_start: dict = {"left": 0.0, "right": 0.0,
                                     "ctrl_left": 0.0, "ctrl_right": 0.0}
         _LONG_PRESS_THRESHOLD = 0.25   # seconds before switching to continuous
@@ -205,12 +205,12 @@ class KeybindingsMixin:
             held_duration = now - _arrow_press_start[slot]
 
             if held_duration < _LONG_PRESS_THRESHOLD:
-                # ── Single / short press: discrete step ───────────────
+                # -- Single / short press: discrete step ---------------
                 frames = 5 if ctrl else 1
                 self.timeline_mgr.StepFrames(direction * frames)
             else:
-                # ── Long press: continuous stepping ───────────────────
-                # Ctrl+held = 2× framerate, plain held = framerate / 2
+                # -- Long press: continuous stepping -------------------
+                # Ctrl+held = 2x framerate, plain held = framerate / 2
                 fps = self.timeline_mgr.EffectiveFps()
                 if ctrl:
                     step_interval = 1.0 / (fps * 2.0)
@@ -231,17 +231,17 @@ class KeybindingsMixin:
             "Next frame", "Navigation", [(0, K.right_arrow, True)], repeat=True)
 
         reg("prev_frame_x5", lambda: _frame_step(-1, True),
-            "Previous frame ×5", "Navigation",
+            "Previous frame x5", "Navigation",
             [(K.mod_ctrl, K.left_arrow, True)], repeat=True)
         reg("next_frame_x5", lambda: _frame_step(1, True),
-            "Next frame ×5", "Navigation",
+            "Next frame x5", "Navigation",
             [(K.mod_ctrl, K.right_arrow, True)], repeat=True)
 
         fast_step = self.preferences.fast_step_amount
         reg("fast_step",     lambda: self.timeline_mgr.StepFrames( fast_step), "Fast step",     "Navigation")
         reg("fast_backstep", lambda: self.timeline_mgr.StepFrames(-fast_step), "Fast backstep", "Navigation")
 
-        # ── Utility ───────────────────────────────────────────────────────
+        # -- Utility -------------------------------------------------------
         reg_grp("Utility", "Utility")
         reg("undo", self.Undo, "Undo", "Utility", [(K.mod_ctrl, K.z, True)], repeat=True)
         reg("redo", self.Redo, "Redo", "Utility", [(K.mod_ctrl, K.y, True)], repeat=True)
@@ -278,7 +278,7 @@ class KeybindingsMixin:
             lambda: self._toggle_fullscreen(),
             "Toggle fullscreen", "Utility", [(0, K.f10)])
 
-        # ── Moving ────────────────────────────────────────────────────────
+        # -- Moving --------------------------------------------------------
         reg_grp("Moving", "Moving")
 
         def _move_pos(delta):
@@ -346,14 +346,14 @@ class KeybindingsMixin:
             lambda: self._move_action_to_current(),
             "Move action to current pos", "Moving", [(0, K.end)])
 
-        # ── Special ───────────────────────────────────────────────────────
+        # -- Special -------------------------------------------------------
         reg_grp("Special", "Special")
         reg("equalize_actions", self.EqualizeSelection, "Equalize actions", "Special", [(0, K.e)])
         reg("invert_actions",   self.InvertSelection,   "Invert actions",   "Special", [(0, K.i)])
         reg("isolate_action",   self.IsolateAction,     "Isolate action",   "Special", [(0, K.r)])
         reg("repeat_stroke",    self.RepeatLastStroke, "Repeat stroke",    "Special", [(0, K.home)])
 
-        # ── Videoplayer ───────────────────────────────────────────────────
+        # -- Videoplayer ---------------------------------------------------
         reg_grp("Videoplayer", "Videoplayer")
         reg("toggle_play",      lambda: self.timeline_mgr.TogglePlay(),  "Toggle play",     "Videoplayer", [(0, K.space)])
         reg("decrement_speed",  lambda: self.timeline_mgr.AddSpeed(-0.1), "Decrease speed",  "Videoplayer", [(0, K.keypad_subtract)])
@@ -365,7 +365,7 @@ class KeybindingsMixin:
         reg("scroll_up",   lambda: None, "Scroll wheel up",   "Videoplayer")
         reg("scroll_down", lambda: None, "Scroll wheel down",  "Videoplayer")
 
-        # ── Chapters ──────────────────────────────────────────────────────
+        # -- Chapters ------------------------------------------------------
         reg_grp("Chapters", "Chapters")
         reg("create_chapter",  lambda: self.chapter_mgr.AddChapter(self._funscript_time(), self._select_end_time()), "Create chapter",  "Chapters")
         reg("create_bookmark", lambda: self.chapter_mgr.AddBookmark(self._funscript_time()), "Create bookmark", "Chapters")

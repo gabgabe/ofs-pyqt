@@ -1,5 +1,5 @@
 """
-OFS_KeybindingSystem — Python port of OFS_KeybindingSystem.h
+OFS_KeybindingSystem  --  Python port of OFS_KeybindingSystem.h
 
 Uses ImGui's IsKeyPressed / IsKeyChordPressed directly.
 No Qt. Registered actions are called from the main loop via ProcessKeybindings().
@@ -7,8 +7,8 @@ No Qt. Registered actions are called from the main loop via ProcessKeybindings()
 Architecture mirrors OFS exactly:
   - RegisterGroup(id, label)
   - RegisterAction({id, fn, repeat}, label, group, [{mods, key, repeat}])
-  - ProcessKeybindings() — call once per frame from update()
-  - ShowModal() / RenderKeybindingWindow() — ImGui UI
+  - ProcessKeybindings()  --  call once per frame from update()
+  - ShowModal() / RenderKeybindingWindow()  --  ImGui UI
 
 Key format uses imgui.Key_* and imgui.Mod_* constants.
 """
@@ -27,7 +27,7 @@ from imgui_bundle import imgui, ImVec2
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Mouse wheel pseudo-keys (not real ImGui keys — negative sentinels)
+# Mouse wheel pseudo-keys (not real ImGui keys  --  negative sentinels)
 # ---------------------------------------------------------------------------
 
 MOUSE_WHEEL_UP   = -1   # pseudo-key for scroll-up bindings
@@ -154,7 +154,7 @@ class OFS_KeybindingSystem:
         """
         self.any_key_active = False
         # Don't fire bindings when a text input widget actually has focus.
-        # ``want_capture_keyboard`` alone is not reliable — ImGui can leave
+        # ``want_capture_keyboard`` alone is not reliable  --  ImGui can leave
         # it True even after the user clicks away from an input widget
         # (the nav system keeps the last-focused window's state).  We
         # combine it with ``is_any_item_active()`` which is True only when
@@ -170,7 +170,7 @@ class OFS_KeybindingSystem:
                 fired = False
                 if chord.mods != 0:
                     if chord.repeat:
-                        # is_key_chord_pressed has no repeat support — fires only
+                        # is_key_chord_pressed has no repeat support  --  fires only
                         # on initial press.  For held-key repeat we check mods are
                         # all down and use is_key_pressed(repeat=True) for the key.
                         mods_down = all(
@@ -182,7 +182,7 @@ class OFS_KeybindingSystem:
                     else:
                         fired = imgui.is_key_chord_pressed(chord.mods | chord.key)
                 else:
-                    # mods=0 means "no modifiers" — don't fire when Ctrl/Shift/Alt/Cmd
+                    # mods=0 means "no modifiers"  --  don't fire when Ctrl/Shift/Alt/Cmd
                     # is held (prevents prev_frame firing alongside fast_backstep,
                     # move_actions_left, prev_frame_x3, etc. that use the same base key).
                     if not (imgui.is_key_down(imgui.Key.mod_ctrl)
@@ -201,7 +201,7 @@ class OFS_KeybindingSystem:
                         log.error(f"Binding '{binding.id}' error: {e}")
                     break  # only fire once per binding per frame
 
-        # Mouse wheel pseudo-key bindings — fire when scroll is not consumed
+        # Mouse wheel pseudo-key bindings  --  fire when scroll is not consumed
         # by any imgui widget (want_capture_mouse is False).
         scroll = imgui.get_io().mouse_wheel
         if scroll != 0 and not imgui.get_io().want_capture_mouse:

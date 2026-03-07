@@ -1,21 +1,21 @@
 """
-SimulatorWindow — Full port of OFS_ScriptSimulator.h / OFS_ScriptSimulator.cpp
+SimulatorWindow  --  Full port of OFS_ScriptSimulator.h / OFS_ScriptSimulator.cpp
 
-Draws an oriented bar (P1 → P2) on the foreground draw list that floats on
+Draws an oriented bar (P1 -> P2) on the foreground draw list that floats on
 top of all other windows, showing the current funscript position.
 
 Matches OFS features:
-  • Draggable P1 / P2 endpoints (hand cursor) + centre-drag (move cursor)
-  • Lock checkbox  ·  Center / Invert / Load / Save config buttons
-  • Collapsing configuration: 6 colour editors, Width/BorderWidth/LineWidth/
+  * Draggable P1 / P2 endpoints (hand cursor) + centre-drag (move cursor)
+  * Lock checkbox,  Center / Invert / Load / Save config buttons
+  * Collapsing configuration: 6 colour editors, Width/BorderWidth/LineWidth/
     Opacity sliders, ExtraLinesCount, feature-toggle checkboxes, vanilla mode,
     Reset to defaults
-  • Height tick marks at 10 % intervals
-  • Prev/next action indicators + numeric position labels
-  • Centre position text
-  • Vanilla mode: read-only VSliderFloat fallback
-  • Config persistence  (~/.ofs-pyqt/sim_config.json)
-  • Mouse-to-position mapping (MouseOnSimulator flag)
+  * Height tick marks at 10 % intervals
+  * Prev/next action indicators + numeric position labels
+  * Centre position text
+  * Vanilla mode: read-only VSliderFloat fallback
+  * Config persistence  (~/.ofs-pyqt/sim_config.json)
+  * Mouse-to-position mapping (MouseOnSimulator flag)
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ log = logging.getLogger(__name__)
 
 _CONFIG_PATH = Path.home() / ".ofs-pyqt" / "sim_config.json"
 
-# ── Helpers ───────────────────────────────────────────────────────────────
+# -- Helpers ---------------------------------------------------------------
 
 def _dist2(a: Tuple, b: Tuple) -> float:
     dx, dy = b[0] - a[0], b[1] - a[1]
@@ -48,7 +48,7 @@ def _norm2(p: Tuple) -> Tuple:
     return (p[0] / mag, p[1] / mag)
 
 def _perp2(d: Tuple) -> Tuple:
-    """90° CCW rotation."""
+    """90 deg CCW rotation."""
     return (-d[1], d[0])
 
 def _add2(a: Tuple, b: Tuple) -> Tuple:
@@ -64,7 +64,7 @@ def _iv2(p: Tuple) -> ImVec2:
     return ImVec2(p[0], p[1])
 
 def _col_u32(c: List[float], opacity: float = 1.0) -> int:
-    """(r,g,b,a) floats → ABGR u32 with opacity applied to alpha."""
+    """(r,g,b,a) floats -> ABGR u32 with opacity applied to alpha."""
     r, g, b, a = c[0], c[1], c[2], c[3] if len(c) > 3 else 1.0
     final_a = min(1.0, a * opacity)
     return (
@@ -75,7 +75,7 @@ def _col_u32(c: List[float], opacity: float = 1.0) -> int:
     )
 
 
-# ── Default state ─────────────────────────────────────────────────────────
+# -- Default state ---------------------------------------------------------
 
 _DEFAULT_STATE: dict = {
     "width":             30.0,
@@ -98,7 +98,7 @@ _DEFAULT_STATE: dict = {
 
 
 class SimulatorWindow:
-    """OFS Simulator panel — visual position indicator.
+    """OFS Simulator panel  --  visual position indicator.
 
     Mirrors ``OFS_ScriptSimulator`` (OFS_ScriptSimulator.h / .cpp).
     """
@@ -119,7 +119,7 @@ class SimulatorWindow:
         self._extra_line_width:  float = _DEFAULT_STATE["extra_line_width"]
         self._extra_lines_count: int   = _DEFAULT_STATE["extra_lines_count"]
 
-        # Colours  (r, g, b, a) in 0‥1
+        # Colours  (r, g, b, a) in 0..1
         self._col_text:        List[float] = list(_DEFAULT_STATE["col_text"])
         self._col_border:      List[float] = list(_DEFAULT_STATE["col_border"])
         self._col_front:       List[float] = list(_DEFAULT_STATE["col_front"])
@@ -144,14 +144,14 @@ class SimulatorWindow:
         self._drag_start_p2: List[float] = [0.0, 0.0]
 
         # Mouse mapping
-        self.mouse_value:      float = 0.0   # 0‥1 mapped position
+        self.mouse_value:      float = 0.0   # 0..1 mapped position
         self.mouse_on_sim:     bool  = False
 
         self._load_config()
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # UIColors integration
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def set_colors(self, colors) -> None:
         """Wire the shared UIColors table.  Overrides sim colours each frame."""
@@ -169,9 +169,9 @@ class SimulatorWindow:
         self._col_indicator   = list(c.sim_indicator)
         self._col_extra_lines = list(c.sim_extra_lines)
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Config persistence
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _load_config(self) -> None:
         if not _CONFIG_PATH.exists():
@@ -214,9 +214,9 @@ class SimulatorWindow:
         self._p1 = [cx - self._width * 0.5, cy - default_len * 0.5]
         self._p2 = [cx - self._width * 0.5, cy + default_len * 0.5]
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Public Show entry-point (called from dockable window)
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def Show(
         self,
@@ -229,7 +229,7 @@ class SimulatorWindow:
             self._initialized = True
         self._sync_colors_from_ui()
 
-        # ── Vanilla mode: simple read-only VSlider ─────────────────────
+        # -- Vanilla mode: simple read-only VSlider ---------------------
         if self._vanilla_mode:
             pos = self._get_position(player, script)
             avail = imgui.get_content_region_avail()
@@ -240,18 +240,18 @@ class SimulatorWindow:
             self._draw_bar(player, script)
             return
 
-        # ── Controls UI ────────────────────────────────────────────────
+        # -- Controls UI ------------------------------------------------
         self._draw_controls()
 
-        # ── Draggable bar (foreground draw list) ───────────────────────
+        # -- Draggable bar (foreground draw list) -----------------------
         if not imgui.is_popup_open("", imgui.PopupFlags_.any_popup):
             self._handle_drag()
 
         self._draw_bar(player, script)
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # UI Controls
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _draw_controls(self) -> None:
         fh = imgui.get_frame_height()
@@ -259,7 +259,7 @@ class SimulatorWindow:
 
         # Lock checkbox
         _, self._locked_position = imgui.checkbox(
-            "Lock" + (" 🔒" if self._locked_position else " 🔓"),
+            "Lock" + (" [LOCK]" if self._locked_position else " [UNLOCK]"),
             self._locked_position,
         )
 
@@ -340,9 +340,9 @@ class SimulatorWindow:
         if imgui.button("Reset to defaults##srd", ImVec2(-1, 0)):
             self._reset_to_defaults()
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Position calculation
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _get_position(self, player: OFS_Videoplayer, script: Optional[Funscript]) -> float:
         if script is None or not player.VideoLoaded():
@@ -352,9 +352,9 @@ class SimulatorWindow:
             return script.actions.InterpolateSpline(t_ms)
         return script.actions.Interpolate(t_ms)
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Drag handling (P1, P2, centre)
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _handle_drag(self) -> None:
         if self._locked_position:
@@ -436,9 +436,9 @@ class SimulatorWindow:
             if imgui.is_mouse_released(0):
                 self._dragging = None
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Draw bar on foreground draw list
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _draw_bar(
         self,
@@ -460,7 +460,7 @@ class SimulatorWindow:
         p1_abs = _add2(off, tuple(self._p1))
         p2_abs = _add2(off, tuple(self._p2))
 
-        direction = _norm2(_sub2(p1_abs, p2_abs))  # from P2 → P1
+        direction = _norm2(_sub2(p1_abs, p2_abs))  # from P2 -> P1
         perp      = _perp2(direction)
 
         bar_p1 = _sub2(p1_abs, _mul2(direction, bw * 0.5))
@@ -473,7 +473,7 @@ class SimulatorWindow:
         bar_thick = max(1.0, w - bw + 1.0)
         percent   = max(0.0, min(1.0, current_pos / 100.0))
 
-        # ── Background ─────────────────────────────────────────────────
+        # -- Background -------------------------------------------------
         fl.add_line(
             _iv2(_add2(bar_p1, _mul2(direction, 1.0))),
             _iv2(_sub2(bar_p2, _mul2(direction, 1.0))),
@@ -481,7 +481,7 @@ class SimulatorWindow:
             bar_thick,
         )
 
-        # ── Front fill ─────────────────────────────────────────────────
+        # -- Front fill -------------------------------------------------
         fl.add_line(
             _iv2(_add2(bar_p2, _mul2(direction, dist * percent))),
             _iv2(bar_p2),
@@ -489,7 +489,7 @@ class SimulatorWindow:
             bar_thick,
         )
 
-        # ── Border quad ────────────────────────────────────────────────
+        # -- Border quad ------------------------------------------------
         if bw > 0.0:
             border_off = _mul2(perp, w * 0.5)
             fl.add_quad(
@@ -501,14 +501,14 @@ class SimulatorWindow:
                 bw,
             )
 
-        # ── Height tick lines (10 % intervals) ─────────────────────────
+        # -- Height tick lines (10 % intervals) -------------------------
         if self._enable_height_lines:
             for i in range(1, 10):
                 self._draw_tick(fl, bar_p2, direction, perp, dist,
                                 i * 10.0, w, bw, op,
                                 self._col_extra_lines, lw)
 
-        # ── Extra lines (above/below range) ────────────────────────────
+        # -- Extra lines (above/below range) ----------------------------
         for i in range(-self._extra_lines_count, 0):
             self._draw_tick(fl, bar_p2, direction, perp, dist,
                             i * 10.0, w, bw, op,
@@ -518,7 +518,7 @@ class SimulatorWindow:
                             i * 10.0, w, bw, op,
                             self._col_extra_lines, self._extra_line_width)
 
-        # ── Indicators (prev / next action) ────────────────────────────
+        # -- Indicators (prev / next action) ----------------------------
         if self._enable_indicators and script is not None and player.VideoLoaded():
             t = player.CurrentTime()
             prev_a = script.GetActionAtTime(t, 0.02)
@@ -536,7 +536,7 @@ class SimulatorWindow:
                 self._draw_indicator(fl, bar_p2, direction, perp, dist,
                                      action.pos, w, bw, op)
 
-        # ── Centre position text ───────────────────────────────────────
+        # -- Centre position text ---------------------------------------
         if self._enable_position:
             label = f"{current_pos:.0f}"
             ts    = imgui.calc_text_size(label)
@@ -545,9 +545,9 @@ class SimulatorWindow:
                          center_pt[1] - ts.y * 0.5)
             fl.add_text(_iv2(text_pos), _col_u32(self._col_text, op), label)
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Draw helpers
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _draw_tick(
         self, fl, bar_p2, direction, perp, dist,

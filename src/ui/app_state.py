@@ -4,7 +4,7 @@ Extracted so that both ``app.py`` and mixin modules can import them
 without circular-import issues.
 """
 
-# ── Status flags (mirrors OFS_Status) ─────────────────────────────────────
+# -- Status flags (mirrors OFS_Status) -------------------------------------
 class OFS_Status:
     """Bit-flag constants for application status. Mirrors ``OFS_Status`` in OpenFunscripter.h."""
 

@@ -1,9 +1,9 @@
 """
-OFS_VideoplayerControls — Python port of OFS_VideoplayerControls.h / .cpp
+OFS_VideoplayerControls  --  Python port of OFS_VideoplayerControls.h / .cpp
 
 Two panels:
-  DrawControls(player)   — play/pause, frame step, speed, mute, chapter nav
-  DrawTimeline(player, script) — seek bar + heatmap gradient strip
+  DrawControls(player)    --  play/pause, frame step, speed, mute, chapter nav
+  DrawTimeline(player, script)  --  seek bar + heatmap gradient strip
 
 Heatmap generation mirrors OFS_ScriptPositionsOverlay gradient.
 """
@@ -23,10 +23,10 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from src.ui.ui_colors import UIColors
 
-# ── Heatmap colours (mirrors OFS gradient) ────────────────────────────────
-_HEATMAP_COLD  = (0x11/255, 0x11/255, 0xFF/255, 1.0)   # deep blue — 0 speed
+# -- Heatmap colours (mirrors OFS gradient) --------------------------------
+_HEATMAP_COLD  = (0x11/255, 0x11/255, 0xFF/255, 1.0)   # deep blue  --  0 speed
 _HEATMAP_WARM  = (0x11/255, 0xFF/255, 0x11/255, 1.0)   # green
-_HEATMAP_HOT   = (0xFF/255, 0x44/255, 0x11/255, 1.0)   # orange-red — max speed
+_HEATMAP_HOT   = (0xFF/255, 0x44/255, 0x11/255, 1.0)   # orange-red  --  max speed
 _HEATMAP_TRANS = (0x00/255, 0x00/255, 0x00/255, 0.0)   # transparent (no content)
 
 HEATMAP_SEGMENTS = 256
@@ -37,7 +37,7 @@ def _lerp_colour(a, b, t):
 
 
 def _speed_colour(norm_speed: float):
-    """Map 0‥1 speed to RGBA. Mirrors OFS_ScriptPositionsOverlay."""
+    """Map 0..1 speed to RGBA. Mirrors OFS_ScriptPositionsOverlay."""
     norm_speed = max(0.0, min(1.0, norm_speed))
     if norm_speed < 0.5:
         return _lerp_colour(_HEATMAP_COLD, _HEATMAP_WARM, norm_speed * 2.0)
@@ -53,7 +53,7 @@ def _rgba_to_u32(r, g, b, a) -> int:
     return ri | (gi << 8) | (bi << 16) | (ai << 24)
 
 
-# ── OFS speed normalisation constants ─────────────────────────────────────
+# -- OFS speed normalisation constants -------------------------------------
 # OFS caps speed at ~500 units/s before normalising
 MAX_SPEED_UNITS_S = 500.0
 
@@ -79,16 +79,16 @@ class OFS_VideoplayerControls:
         # Shared colour table (set via set_colors)
         self._ui_colors: Optional["UIColors"] = None
 
-        # Optional transport controller — when set, play/pause/seek/speed go
+        # Optional transport controller  --  when set, play/pause/seek/speed go
         # through the TimelineManager instead of calling the player directly.
         self._timeline_mgr = None  # TimelineManager | None
 
-        # Selected track id — mirrors track_info selection.
+        # Selected track id  --  mirrors track_info selection.
         # When set, the progress bar shows the track's range; otherwise the
         # full timeline range (or video duration if no timeline manager).
         self._selected_track_id: Optional[str] = None
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def Init(self, player: OFS_Videoplayer) -> None:
         pass  # GL texture upload deferred to first use
@@ -108,9 +108,9 @@ class OFS_VideoplayerControls:
     def _effective_range(self) -> tuple:
         """Return (start, end, current) for the progress bar.
 
-        * If a track is selected → (track.offset, track.end, transport_pos)
-        * Else if timeline_mgr → (earliest_track_start, latest_track_end, transport_pos)
-        * Fallback → (0, player.Duration(), player.CurrentTime())
+        * If a track is selected -> (track.offset, track.end, transport_pos)
+        * Else if timeline_mgr -> (earliest_track_start, latest_track_end, transport_pos)
+        * Fallback -> (0, player.Duration(), player.CurrentTime())
         """
         mgr = self._timeline_mgr
         if mgr is not None:
@@ -122,7 +122,7 @@ class OFS_VideoplayerControls:
                 if result:
                     _lay, trk = result
                     return (trk.offset, trk.end, pos)
-            # No track selected → span from earliest track start to latest track end
+            # No track selected -> span from earliest track start to latest track end
             all_tracks = tl.AllTracks()
             if all_tracks:
                 t_min = min(t.offset for _l, t in all_tracks)
@@ -131,9 +131,9 @@ class OFS_VideoplayerControls:
                     return (t_min, t_max, pos)
         return None  # caller will fallback to player
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Heatmap update (called by app when gradient flag set)
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def UpdateHeatmap(
         self,
@@ -193,9 +193,9 @@ class OFS_VideoplayerControls:
         self._heatmap_colours = colours
         self._heatmap_dirty   = True
 
-    # ──────────────────────────────────────────────────────────────────────
-    # DrawControls — play/pause bar
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
+    # DrawControls  --  play/pause bar
+    # ----------------------------------------------------------------------
 
     def _has_content(self) -> bool:
         """True if a video is loaded OR the timeline has any tracks."""
@@ -212,7 +212,7 @@ class OFS_VideoplayerControls:
 
         mgr = self._timeline_mgr  # may be None
 
-        # ── Row 1: playback buttons ────────────────────────────────────
+        # -- Row 1: playback buttons ------------------------------------
         button_h = imgui.get_frame_height()
         small    = ImVec2(button_h, button_h)
 
@@ -224,10 +224,10 @@ class OFS_VideoplayerControls:
                 else:
                     player.PreviousFrame()
             if imgui.is_item_hovered():
-                imgui.set_tooltip("Previous frame  [←]")
+                imgui.set_tooltip("Previous frame  [<-]")
             imgui.same_line()
 
-        # play/pause — route through transport when available
+        # play/pause  --  route through transport when available
         is_playing = (not mgr.IsPlaying()) if mgr else player.IsPaused()
         play_icon = fa.ICON_FA_PAUSE if not is_playing else fa.ICON_FA_PLAY
         if imgui.button(play_icon, small):
@@ -247,18 +247,18 @@ class OFS_VideoplayerControls:
                 else:
                     player.NextFrame()
             if imgui.is_item_hovered():
-                imgui.set_tooltip("Next frame  [→]")
+                imgui.set_tooltip("Next frame  [->]")
 
         imgui.same_line(spacing=8)
 
-        # ── ±3 s seek buttons ──────────────────────────────────────────
+        # -- +/-3 s seek buttons ------------------------------------------
         if imgui.button(fa.ICON_FA_BACKWARD + " 3s##sk_back", ImVec2(0, button_h)):
             if mgr:
                 mgr.SeekRelative(-3.0)
             else:
                 player.SeekRelative(-3.0)
         if imgui.is_item_hovered():
-            imgui.set_tooltip("Seek −3 seconds  [Shift+←]")
+            imgui.set_tooltip("Seek -3 seconds  [Shift+<-]")
         imgui.same_line(spacing=2)
         if imgui.button("3s " + fa.ICON_FA_FORWARD + "##sk_fwd", ImVec2(0, button_h)):
             if mgr:
@@ -266,7 +266,7 @@ class OFS_VideoplayerControls:
             else:
                 player.SeekRelative(3.0)
         if imgui.is_item_hovered():
-            imgui.set_tooltip("Seek +3 seconds  [Shift+→]")
+            imgui.set_tooltip("Seek +3 seconds  [Shift+->]")
 
         imgui.same_line(spacing=8)
 
@@ -294,10 +294,10 @@ class OFS_VideoplayerControls:
         else:
             avail = imgui.get_content_region_avail().x
 
-        # speed input — route through transport when available
+        # speed input  --  route through transport when available
         imgui.set_next_item_width(max(50, min(70, avail * 0.15)))
         speed = mgr.transport.speed if mgr else player.CurrentSpeed()
-        changed_s, new_speed = imgui.input_float("##spd", speed, 0.0, 0.0, "%.2f×")
+        changed_s, new_speed = imgui.input_float("##spd", speed, 0.0, 0.0, "%.2fx")
         if changed_s:
             new_speed = max(0.05, min(5.0, new_speed))
             if mgr:
@@ -309,7 +309,7 @@ class OFS_VideoplayerControls:
 
         imgui.same_line(spacing=2)
 
-        # speed preset buttons: 1×  -10%  +10%
+        # speed preset buttons: 1x  -10%  +10%
         spd_w = ImVec2(max(28, button_h * 1.6), button_h)
         if imgui.button("1" + fa.ICON_FA_XMARK + "##sp1", spd_w):
             if mgr:
@@ -317,7 +317,7 @@ class OFS_VideoplayerControls:
             else:
                 player.SetSpeed(1.0)
         if imgui.is_item_hovered():
-            imgui.set_tooltip("Reset speed to 1×")
+            imgui.set_tooltip("Reset speed to 1x")
         imgui.same_line(spacing=2)
         if imgui.button("-10%%##spm", spd_w):
             if mgr:
@@ -335,14 +335,14 @@ class OFS_VideoplayerControls:
         if imgui.is_item_hovered():
             imgui.set_tooltip("Increase speed by 10%")
 
-        # Actual measured speed — show when it diverges from requested speed
+        # Actual measured speed  --  show when it diverges from requested speed
         if has_video:
             actual = player.ActualSpeed() if hasattr(player, "ActualSpeed") else speed
             if abs(actual - speed) > 0.02 and not player.IsPaused():
                 imgui.same_line(spacing=6)
                 imgui.text_disabled(f"~{actual:.2f}\u00d7")
 
-        # ── Buffering indicator (Omakase pattern) ─────────────────────
+        # -- Buffering indicator (Omakase pattern) ---------------------
         if mgr and mgr.IsBuffering():
             imgui.same_line(spacing=8)
             # Animated dots
@@ -357,9 +357,9 @@ class OFS_VideoplayerControls:
             imgui.text_colored(ImVec4(1.0, 0.7, 0.2, 1.0),
                                "Buffering" + "." * n_dots)
 
-    # ──────────────────────────────────────────────────────────────────────
-    # DrawTimeline — custom heatmap + seek bar with chapter/bookmark overlay
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
+    # DrawTimeline  --  custom heatmap + seek bar with chapter/bookmark overlay
+    # ----------------------------------------------------------------------
 
     def DrawTimeline(
         self,
@@ -399,7 +399,7 @@ class OFS_VideoplayerControls:
         pct     = max(0.0, min(1.0, (current - bar_start) / duration)) if duration > 0 else 0.0
         ox, oy  = origin.x, origin.y
 
-        # 1 ── Background (grey unfilled portion) ──────────────────────
+        # 1 -- Background (grey unfilled portion) ----------------------
         _c = self._ui_colors
         col_bg      = _rgba_to_u32(*_c.progress_bg)      if _c else 0xFF505050
         col_fill    = _rgba_to_u32(*_c.progress_fill)     if _c else 0xBB2D5FAA
@@ -413,7 +413,7 @@ class OFS_VideoplayerControls:
             col_bg,
         )
 
-        # 2 ── Progress fill (highlight up to cursor) ──────────────────
+        # 2 -- Progress fill (highlight up to cursor) ------------------
         fill_x = ox + W * pct
         dl.add_rect_filled(
             ImVec2(ox,            oy),
@@ -421,7 +421,7 @@ class OFS_VideoplayerControls:
             col_fill,
         )
 
-        # 3 ── Heatmap overlay ──────────────────────────────────────────
+        # 3 -- Heatmap overlay ------------------------------------------
         if self._heatmap_colours:
             n     = len(self._heatmap_colours)
             seg_w = W / n
@@ -432,7 +432,7 @@ class OFS_VideoplayerControls:
                 x1 = ox + (i + 1) * seg_w
                 dl.add_rect_filled(ImVec2(x0, oy), ImVec2(x1, oy + BAR_H), col)
 
-        # 4 ── Chapters (top strip) ────────────────────────────────────
+        # 4 -- Chapters (top strip) ------------------------------------
         if chapter_mgr and chapter_mgr._chapters:
             for ch in chapter_mgr._chapters:
                 ch_x0 = ox + ((ch.start - bar_start) / duration) * W
@@ -464,7 +464,7 @@ class OFS_VideoplayerControls:
                             0xFFFFFFFF, ch.name,
                         )
 
-        # 5 ── Bookmarks (small circles at bottom) ─────────────────────
+        # 5 -- Bookmarks (small circles at bottom) ---------------------
         if chapter_mgr and chapter_mgr._bookmarks:
             for bm in chapter_mgr._bookmarks:
                 bm_x = ox + ((bm.time - bar_start) / duration) * W
@@ -480,12 +480,12 @@ class OFS_VideoplayerControls:
                         0xFFFFFFFF, bm.name,
                     )
 
-        # 6 ── Cursor line (white + dark shadow) ───────────────────────
+        # 6 -- Cursor line (white + dark shadow) -----------------------
         cx = ox + W * pct
         dl.add_line(ImVec2(cx, oy - 1), ImVec2(cx, oy + BAR_H + 1), col_shadow, 3.0)
         dl.add_line(ImVec2(cx, oy - 1), ImVec2(cx, oy + BAR_H + 1), col_cursor, 1.5)
 
-        # 7 ── Invisible button for interaction ────────────────────────
+        # 7 -- Invisible button for interaction ------------------------
         imgui.set_cursor_screen_pos(ImVec2(ox, oy))
         imgui.invisible_button("##timeline_bar", ImVec2(W, BAR_H))
 
@@ -517,7 +517,7 @@ class OFS_VideoplayerControls:
                 else:
                     player.SetPaused(False)
 
-        # 8 ── Hover effects ───────────────────────────────────────────
+        # 8 -- Hover effects -------------------------------------------
         if imgui.is_item_hovered():
             mouse = imgui.get_mouse_pos()
             rel   = (mouse.x - ox) / W
@@ -554,7 +554,7 @@ class OFS_VideoplayerControls:
             else:
                 imgui.set_tooltip(time_str)
 
-        # 9 ── Chapter context menus ───────────────────────────────────
+        # 9 -- Chapter context menus -----------------------------------
         if chapter_mgr and chapter_mgr._chapters:
             if imgui.is_item_hovered() and imgui.is_mouse_clicked(1):
                 mouse    = imgui.get_mouse_pos()
@@ -573,13 +573,13 @@ class OFS_VideoplayerControls:
                         player.SetPositionExact(ch.end)
                     imgui.end_popup()
 
-        # 10 ── Time label below bar ───────────────────────────────────
+        # 10 -- Time label below bar -----------------------------------
         imgui.dummy(ImVec2(1, 2))
         imgui.text_disabled(self._format_time(current, bar_end))
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Heatmap bitmap export
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def RenderHeatmapToBytes(
         self,
@@ -588,7 +588,7 @@ class OFS_VideoplayerControls:
         chapters=None,
         chapter_height: int = 0,
     ) -> Optional[bytes]:
-        """Return raw RGBA bytes for a heatmap image of (width × total_height).
+        """Return raw RGBA bytes for a heatmap image of (width x total_height).
 
         Parameters
         ----------
@@ -619,7 +619,7 @@ class OFS_VideoplayerControls:
 
         n = len(self._heatmap_colours)
 
-        # ── Heatmap band ──────────────────────────────────────────────────
+        # -- Heatmap band --------------------------------------------------
         for px in range(width):
             seg_idx = int(px / width * n)
             seg_idx = min(seg_idx, n - 1)
@@ -633,7 +633,7 @@ class OFS_VideoplayerControls:
             for py in range(y0, y0 + height):
                 _put(px, py, r, g, b, a)
 
-        # ── Chapter strip (top) ───────────────────────────────────────────
+        # -- Chapter strip (top) -------------------------------------------
         if chapters and chapter_height > 0 and self._heatmap_duration > 0:
             for ch in chapters:
                 if not hasattr(ch, 'start_time') or not hasattr(ch, 'end_time'):
@@ -667,7 +667,7 @@ class OFS_VideoplayerControls:
         width       Image width in pixels (default 1280).
         height      Heatmap band height in pixels (default 100).
         chapters    If provided, an additional chapter strip of `height` pixels
-                    is added on top (total image = width × 2*height).
+                    is added on top (total image = width x 2*height).
         """
         chapter_height = height if chapters else 0
         raw = self.RenderHeatmapToBytes(width, height,
@@ -714,8 +714,8 @@ class OFS_VideoplayerControls:
             logging.getLogger(__name__).error(f"SaveHeatmapPng: {exc}")
             return False
 
-    # ──────────────────────────────────────────────────────────────────────
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
+    # ----------------------------------------------------------------------
 
     @staticmethod
     def _rgba_to_u32(r: float, g: float, b: float, a: float = 1.0) -> int:

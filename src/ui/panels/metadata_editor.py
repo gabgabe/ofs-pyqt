@@ -1,5 +1,5 @@
 """
-MetadataEditorWindow — Python port of OFS_MetadataEditor.h / .cpp
+MetadataEditorWindow  --  Python port of OFS_MetadataEditor.h / .cpp
 
 Edits the metadata block stored in the .ofsp project:
   title, creator, description, duration, performers, tags, type,
@@ -29,7 +29,7 @@ _TEMPLATE_PATH = Path.home() / ".ofs-pyqt" / "metadata_template.json"
 
 
 class MetadataEditorWindow:
-    """OFS Metadata Editor — modal popup."""
+    """OFS Metadata Editor  --  modal popup."""
 
     WindowId = _POPUP_ID
 
@@ -37,7 +37,7 @@ class MetadataEditorWindow:
         self._was_open: bool = False
         self._buf: dict = {}   # per-field input buffers
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def Show(
         self,
@@ -73,7 +73,7 @@ class MetadataEditorWindow:
             return False
         return True
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _draw(self, project: OFS_Project, player: OFS_Videoplayer,
               timeline_mgr: "TimelineManager | None" = None) -> None:
@@ -86,14 +86,14 @@ class MetadataEditorWindow:
 
         meta = project.metadata
 
-        # ── Title ─────────────────────────────────────────────────────
+        # -- Title -----------------------------------------------------
         self._text_field("Title",       meta, "title")
         self._text_field("Creator",     meta, "creator")
         self._text_field("Description", meta, "description", multiline=True)
         self._text_field("Video URL",   meta, "video_url")
         self._text_field("Script URL",  meta, "script_url")
 
-        # ── Notes ─────────────────────────────────────────────────────
+        # -- Notes -----------------------------------------------------
         imgui.text("Notes")
         imgui.set_next_item_width(-1)
         notes = str(meta.notes or "")
@@ -101,10 +101,10 @@ class MetadataEditorWindow:
         if changed:
             meta.notes = val
 
-        # ── Type ──────────────────────────────────────────────────────
+        # -- Type ------------------------------------------------------
         self._text_field("Type", meta, "type")
 
-        # ── License combo ─────────────────────────────────────────────
+        # -- License combo ---------------------------------------------
         imgui.text("License")
         imgui.same_line(spacing=8)
         imgui.set_next_item_width(160)
@@ -115,15 +115,15 @@ class MetadataEditorWindow:
 
         imgui.separator()
 
-        # ── Performers — chip row ──────────────────────────────────────
+        # -- Performers  --  chip row --------------------------------------
         self._chip_row("Performers", meta.performers, "perf")
 
-        # ── Tags — chip row ────────────────────────────────────────────
+        # -- Tags  --  chip row --------------------------------------------
         self._chip_row("Tags", meta.tags, "tags")
 
         imgui.separator()
 
-        # ── Per-track video metadata (read-only) ───────────────────────
+        # -- Per-track video metadata (read-only) -----------------------
         vtracks = []
         if timeline_mgr:
             vtracks = timeline_mgr.timeline.VideoTracks()
@@ -139,10 +139,10 @@ class MetadataEditorWindow:
                 s = dur % 60
                 dur_str = (f"{h:02d}:{m:02d}:{s:05.2f}" if h
                            else f"{m:02d}:{s:05.2f}")
-                res_str = f"{vd.width}×{vd.height}" if vd.width else "?"
+                res_str = f"{vd.width}x{vd.height}" if vd.width else "?"
                 fps_str = f"{vd.fps:.2f}" if vd.fps else "?"
                 imgui.bullet_text(
-                    f"{vt.name}  —  {dur_str}  {res_str}  {fps_str} fps"
+                    f"{vt.name} - {dur_str}  {res_str}  {fps_str} fps"
                 )
         elif player.VideoLoaded():
             dur = player.Duration()
@@ -156,7 +156,7 @@ class MetadataEditorWindow:
         imgui.spacing()
         imgui.separator()
 
-        # ── Buttons ────────────────────────────────────────────────────
+        # -- Buttons ----------------------------------------------------
         if imgui.button("Save##meta", ImVec2(80, 0)):
             project.Save()
         if imgui.is_item_hovered():
@@ -178,9 +178,9 @@ class MetadataEditorWindow:
         if imgui.button("Close##meta", ImVec2(80, 0)):
             imgui.close_current_popup()
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Helpers
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _text_field(
         self,
@@ -201,14 +201,14 @@ class MetadataEditorWindow:
             setattr(obj, attr, val)
 
     def _chip_row(self, label: str, items: List[str], key: str) -> None:
-        """Render a chip row — small labelled buttons for each item, + add button."""
+        """Render a chip row  --  small labelled buttons for each item, + add button."""
         imgui.text(f"{label}:")
         imgui.same_line()
 
         del_idx = -1
         for i, item in enumerate(items):
             imgui.push_id(i + hash(key))
-            # Chip: item label + ×
+            # Chip: item label + x
             if imgui.small_button(f"{item}  \u00d7"):
                 del_idx = i
             if imgui.is_item_hovered():
@@ -233,9 +233,9 @@ class MetadataEditorWindow:
                 self._buf[key] = ""
         imgui.spacing()
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Template save / load
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _save_template(self, meta) -> None:
         _TEMPLATE_PATH.parent.mkdir(parents=True, exist_ok=True)

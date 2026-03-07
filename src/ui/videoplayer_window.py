@@ -1,5 +1,5 @@
 """
-OFS_VideoplayerWindow — Python port of OFS_VideoplayerWindow.h / .cpp
+OFS_VideoplayerWindow  --  Python port of OFS_VideoplayerWindow.h / .cpp
 
 Renders the mpv frame texture via imgui.image().
 Supports zoom/pan, VR mode (side-by-side left/right), fullscreen toggle.
@@ -17,7 +17,7 @@ ImTextureRef = imgui.ImTextureRef
 
 from src.core.video_player import OFS_Videoplayer
 
-# ── Video mode (mirrors OFS_VideoplayerWindow::VideoMode) ─────────────────
+# -- Video mode (mirrors OFS_VideoplayerWindow::VideoMode) -----------------
 class VideoMode:
     FULL    = 0   # full frame
     LEFT    = 1   # left half (VR side-by-side)
@@ -47,19 +47,19 @@ class OFS_VideoplayerWindow:
         # Context-menu visibility
         self._ctx_open: bool = False
 
-        # #15 lockedPosition — prevent pan/zoom changes when True
+        # #15 lockedPosition  --  prevent pan/zoom changes when True
         self.locked_position: bool = False
 
         # Size of the video area last frame
         self._last_video_size: ImVec2 = ImVec2(0, 0)
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def reset_translation_and_zoom(self) -> None:
         self._zoom   = 1.0
         self._offset = ImVec2(0.0, 0.0)
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def Draw(self, player: OFS_Videoplayer, draw_video: bool = True,
              timeline_mgr=None) -> None:
@@ -132,9 +132,9 @@ class OFS_VideoplayerWindow:
         self._handle_interaction(active_player, cx, cy, draw_w, draw_h)
         self._handle_context_menu(active_player)
 
-    # ──────────────────────────────────────────────────────────────────────
-    # UV computation — handles all VideoModes
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
+    # UV computation  --  handles all VideoModes
+    # ----------------------------------------------------------------------
 
     def _compute_uvs(
         self, avail: ImVec2, vid_w: int, vid_h: int
@@ -174,9 +174,9 @@ class OFS_VideoplayerWindow:
 
         return draw_w, draw_h, uv0, uv1
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Interaction
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _handle_interaction(
         self, player: OFS_Videoplayer,
@@ -184,18 +184,18 @@ class OFS_VideoplayerWindow:
     ) -> None:
         io = imgui.get_io()
 
-        # Double-click → toggle play
+        # Double-click -> toggle play
         if imgui.is_item_hovered():
             if imgui.is_mouse_double_clicked(0):
                 player.TogglePlay()
 
-            # Scroll wheel → zoom (Ctrl = fine) — guarded by locked_position
+            # Scroll wheel -> zoom (Ctrl = fine)  --  guarded by locked_position
             wheel = io.mouse_wheel
             if wheel != 0.0 and not self.locked_position:
                 factor = 0.05 if not io.key_ctrl else 0.01
                 self._zoom = max(0.1, min(8.0, self._zoom + wheel * factor))
 
-        # Left drag → pan — guarded by locked_position
+        # Left drag -> pan  --  guarded by locked_position
         if imgui.is_item_active() and imgui.is_mouse_dragging(0, 2.0) and not self.locked_position:
             if self._drag_start is None:
                 self._drag_start       = ImVec2(io.mouse_pos.x, io.mouse_pos.y)

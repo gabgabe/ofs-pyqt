@@ -1,11 +1,11 @@
 """
-WaveformData — background audio waveform extraction for the script timeline.
+WaveformData  --  background audio waveform extraction for the script timeline.
 
 Uses ffmpeg (subprocess) to decode the video's audio track to raw s16le mono
 at a low sample rate (SAMPLE_RATE Hz).  Samples are normalised to 0-1 and
 stored for quick lookup during timeline rendering.
 
-No external pip packages needed — only stdlib struct + subprocess.
+No external pip packages needed  --  only stdlib struct + subprocess.
 """
 
 from __future__ import annotations
@@ -34,9 +34,9 @@ class WaveformData:
         self._loading: bool = False
         self._duration: float = 0.0
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Properties
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     @property
     def ready(self) -> bool:
@@ -50,9 +50,9 @@ class WaveformData:
     def duration(self) -> float:
         return self._duration
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Public API
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def clear(self) -> None:
         self._samples = []
@@ -63,7 +63,7 @@ class WaveformData:
 
     def load_async(self, video_path: str) -> None:
         """Start waveform extraction in a background thread.
-        Safe to call multiple times — ignores if already loaded for same path."""
+        Safe to call multiple times  --  ignores if already loaded for same path."""
         if not video_path:
             return
         if video_path == self._video_path and self._ready:
@@ -94,15 +94,15 @@ class WaveformData:
             return 0.0
         return max(self._samples[i0:i1])
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Background loader thread
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _load_thread(self, video_path: str) -> None:
         try:
             ffmpeg = shutil.which("ffmpeg")
             if not ffmpeg:
-                log.warning("Waveform: ffmpeg not found in PATH — waveform unavailable")
+                log.warning("Waveform: ffmpeg not found in PATH - waveform unavailable")
                 return
 
             # Decode audio to raw signed 16-bit mono at SAMPLE_RATE Hz.
@@ -141,7 +141,7 @@ class WaveformData:
             self._duration = n / SAMPLE_RATE
             self._ready = True
             log.info(
-                "Waveform loaded: %d samples, %.1fs — %s",
+                "Waveform loaded: %d samples, %.1fs - %s",
                 n,
                 self._duration,
                 os.path.basename(video_path),

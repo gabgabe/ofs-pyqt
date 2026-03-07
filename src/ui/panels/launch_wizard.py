@@ -1,23 +1,23 @@
 """
-LaunchWizard — startup project picker dialog.
+LaunchWizard  --  startup project picker dialog.
 
 Mimics a professional DAW / NLE project-launcher:
 
-  ┌── Project ──────────────────────────────────────┐
-  │  New Project     │  (list of recent projects)   │
-  │  Recent Project  │  testlaserwave               │
-  │  From Template   │  testmaterial                 │
-  │  Open Project... │                               │
-  │                  │                               │
-  │──────────────────│───────────────────────────────│
-  │  [✓] Show at Startup       Cancel     OK        │
-  └─────────────────────────────────────────────────┘
+  +-- Project --------------------------------------+
+  |  New Project     |  (list of recent projects)   |
+  |  Recent Project  |  testlaserwave               |
+  |  From Template   |  testmaterial                 |
+  |  Open Project... |                               |
+  |                  |                               |
+  |------------------|-------------------------------|
+  |  [[OK]] Show at Startup       Cancel     OK        |
+  +-------------------------------------------------+
 
 Modes:
-  0 — New Project         Ask for save location, create empty .ofsp
-  1 — Recent Project      Show list of recently opened projects
-  2 — From Template       Show .ofsp files in ~/.ofs-pyqt/templates/
-  3 — Open Project...     Native file dialog
+  0  --  New Project         Ask for save location, create empty .ofsp
+  1  --  Recent Project      Show list of recently opened projects
+  2  --  From Template       Show .ofsp files in ~/.ofs-pyqt/templates/
+  3  --  Open Project...     Native file dialog
 """
 
 from __future__ import annotations
@@ -60,16 +60,16 @@ class LaunchWizard:
         self._templates: List[str] = []     # abs paths to template .ofsp files
         self._new_name: str = ""            # for new-project name field
 
-        # Result — set when user confirms, then read by app.py
+        # Result  --  set when user confirms, then read by app.py
         self._result_action: Optional[str] = None   # "new", "open", "recent", "template"
         self._result_path: Optional[str] = None
 
         # Load settings
         self._load()
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Public API
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     @property
     def show_at_startup(self) -> bool:
@@ -106,9 +106,9 @@ class LaunchWizard:
         self._result_path = None
         return a, p
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Draw
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def Show(self) -> None:
         """Render the wizard window.  Called from _show_gui every frame."""
@@ -138,14 +138,14 @@ class LaunchWizard:
         win_size = imgui.get_window_size()
         content_min = imgui.get_cursor_screen_pos()
 
-        # ── Layout zones ──────────────────────────────────────────────
+        # -- Layout zones ----------------------------------------------
         sidebar_x = content_min.x
         sidebar_y = content_min.y
         body_x = sidebar_x + _SIDEBAR_W + 8
         body_w = win_pos.x + win_size.x - body_x - 12
         body_h = win_pos.y + win_size.y - sidebar_y - _BOTTOM_H - 12
 
-        # ── Sidebar ────────────────────────────────────────────────────
+        # -- Sidebar ----------------------------------------------------
         imgui.begin_child("##wiz_sidebar", ImVec2(_SIDEBAR_W, body_h), imgui.ChildFlags_.none)
         style = imgui.get_style()
         for i, label in enumerate(_TAB_LABELS):
@@ -163,7 +163,7 @@ class LaunchWizard:
                 imgui.pop_style_color(3)
         imgui.end_child()
 
-        # ── Body ───────────────────────────────────────────────────────
+        # -- Body -------------------------------------------------------
         imgui.same_line()
         imgui.begin_child("##wiz_body", ImVec2(body_w, body_h), imgui.ChildFlags_.borders)
 
@@ -178,7 +178,7 @@ class LaunchWizard:
 
         imgui.end_child()
 
-        # ── Bottom bar ─────────────────────────────────────────────────
+        # -- Bottom bar -------------------------------------------------
         imgui.spacing()
         imgui.separator()
         imgui.spacing()
@@ -196,15 +196,15 @@ class LaunchWizard:
             self._visible = False
 
         imgui.same_line()
-        # OK button — uses theme's default button colours
+        # OK button  --  uses theme's default button colours
         if imgui.button("OK", ImVec2(_BTN_W, 0)):
             self._confirm()
 
         imgui.end()
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Tab content
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _draw_new_project(self, w: float) -> None:
         imgui.text("Create a new project")
@@ -232,7 +232,7 @@ class LaunchWizard:
                 self._selected_idx = i
             if imgui.is_item_hovered():
                 imgui.set_tooltip(path)
-            # Double-click → confirm immediately
+            # Double-click -> confirm immediately
             if imgui.is_item_hovered() and imgui.is_mouse_double_clicked(0):
                 self._selected_idx = i
                 self._confirm()
@@ -264,9 +264,9 @@ class LaunchWizard:
                 self._selected_idx = i
                 self._confirm()
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Actions
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _confirm(self) -> None:
         """Handle OK button press."""
@@ -314,9 +314,9 @@ class LaunchWizard:
         except ImportError:
             log.warning("portable_file_dialogs not available for launch wizard")
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Templates directory
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _templates_dir(self) -> str:
         return str(Path(self._pref_dir) / "templates")
@@ -331,9 +331,9 @@ class LaunchWizard:
             if f.suffix.lower() == ".ofsp" and f.is_file():
                 self._templates.append(str(f))
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Persistence
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _settings_path(self) -> Path:
         return Path(self._pref_dir) / "launch_wizard.json"

@@ -1,8 +1,8 @@
 """
-OFS_Videoplayer — Python port of OFS_Videoplayer.h / OFS_MpvVideoplayer.cpp
+OFS_Videoplayer  --  Python port of OFS_Videoplayer.h / OFS_MpvVideoplayer.cpp
 
 Architecture (identical to OFS C++):
-  mpv(vo=libmpv)  →  MpvRenderContext  →  OpenGL FBO  →  GL texture
+  mpv(vo=libmpv)  ->  MpvRenderContext  ->  OpenGL FBO  ->  GL texture
   main loop calls Update(delta) each frame which renders into the texture.
   The caller renders ImGui::Image(FrameTexture, size) to display video.
 
@@ -27,14 +27,14 @@ try:
     MPV_AVAILABLE = True
 except ImportError:
     MPV_AVAILABLE = False
-    log.error("python-mpv not found — install with: pip install python-mpv")
+    log.error("python-mpv not found - install with: pip install python-mpv")
 
 try:
     from OpenGL import GL as gl
     _GL_AVAILABLE = True
 except ImportError:
     _GL_AVAILABLE = False
-    log.error("PyOpenGL not found — install with: pip install PyOpenGL")
+    log.error("PyOpenGL not found - install with: pip install PyOpenGL")
 
 
 # ---------------------------------------------------------------------------
@@ -42,7 +42,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 def _load_sdl2() -> Optional[ctypes.CDLL]:
-    """Try to load SDL2 for SDL_GL_GetProcAddress — fallback only."""
+    """Try to load SDL2 for SDL_GL_GetProcAddress  --  fallback only."""
     if platform.system() == "Darwin":
         # pysdl2-dll framework bundle
         try:
@@ -92,7 +92,7 @@ def _load_glfw() -> Optional[ctypes.CDLL]:
 _sdl2: Optional[ctypes.CDLL] = None
 _glfw: Optional[ctypes.CDLL] = None
 
-# Must be a C function pointer — keep a module-level reference so GC doesn't collect it
+# Must be a C function pointer  --  keep a module-level reference so GC doesn't collect it
 _GET_PROC_FN_TYPE = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_char_p)
 
 @_GET_PROC_FN_TYPE
@@ -180,7 +180,7 @@ class OFS_Videoplayer:
         self._last_progress_wall: float = 0.0  # last time percent-pos changed
         self._last_progress_pct: float = 0.0
 
-        # Render update signal — set from mpv callback thread, cleared by main thread
+        # Render update signal  --  set from mpv callback thread, cleared by main thread
         # Mirrors OFS SDL_atomic_t renderUpdate
         self._render_pending: threading.Event = threading.Event()
 
@@ -201,11 +201,11 @@ class OFS_Videoplayer:
             log.error("PyOpenGL not available")
             return False
 
-        # vo=libmpv: render into our OpenGL FBO — no native OS window is created.
+        # vo=libmpv: render into our OpenGL FBO  --  no native OS window is created.
         # Without this mpv defaults to vo=gpu and opens its own Cocoa/X11 window.
         self._mpv = _mpv_module.MPV(vo="libmpv")
         try:
-            # Don't loop — timeline transport controls playback flow.
+            # Don't loop  --  timeline transport controls playback flow.
             # loop_file="inf" caused end-of-video flashing when transport
             # reached the clip's end boundary.
             self._mpv["loop-file"] = "no"
@@ -287,7 +287,7 @@ class OFS_Videoplayer:
             try:
                 # gpu-hq adds heavy GLSL shaders (debanding, ewa_lanczos scaling, etc.)
                 # that are fine in native C++ but add significant Python FFI overhead.
-                # Use hwdec only — let mpv choose quality defaults.
+                # Use hwdec only  --  let mpv choose quality defaults.
                 self._mpv["hwdec"] = "auto-safe"
             except Exception:
                 pass
@@ -306,7 +306,7 @@ class OFS_Videoplayer:
 
         try:
             # advanced_control=True: mirrors MPV_RENDER_PARAM_ADVANCED_CONTROL=1 in OFS.
-            # Gives the application full control of render timing — mpv will NOT
+            # Gives the application full control of render timing  --  mpv will NOT
             # drive its own scheduling loop or block our thread.
             self._render_ctx = _mpv_module.MpvRenderContext(
                 self._mpv,
@@ -351,19 +351,19 @@ class OFS_Videoplayer:
             if value is not None:
                 new_pct = float(value) / 100.0
                 now = _time.monotonic()
-                # Compute actual speed: Δpos * duration / Δwall_time
+                # Compute actual speed: Dpos * duration / Dwall_time
                 dt = now - self._last_pct_wall
                 dp = new_pct - self._last_pct_for_speed
                 if dt > 0.01 and self._duration > 0 and dp > 0:
                     measured = (dp * self._duration) / dt
-                    # EMA with α=0.2 — smooth out single-frame jitter
+                    # EMA with a=0.2  --  smooth out single-frame jitter
                     self._actual_speed = 0.8 * self._actual_speed + 0.2 * measured
                 if not self._paused:
                     self._last_pct_for_speed = new_pct
                     self._last_pct_wall = now
                 self._percent_pos = new_pct
 
-                # ── Buffering detection ──────────────────────────────
+                # -- Buffering detection ------------------------------
                 # Track progress: if position changes, we're not buffering.
                 if abs(new_pct - self._last_progress_pct) > 1e-6:
                     self._last_progress_pct = new_pct
@@ -371,9 +371,9 @@ class OFS_Videoplayer:
                     if self._is_buffering:
                         self._is_buffering = False
 
-                # ── Seek confirmation ─────────────────────────────────
+                # -- Seek confirmation ---------------------------------
                 # Clear the seeking flag once mpv reports a position
-                # near the seek target — the new frame has been decoded.
+                # near the seek target  --  the new frame has been decoded.
                 if self._seeking:
                     arrived_t = self._duration * new_pct
                     half_frame = self.FrameTime() * 0.5
@@ -383,7 +383,7 @@ class OFS_Videoplayer:
                         self._seek_confirm_pending = False
                         self._seek_confirm_retries = 0
                     elif not self._paused:
-                        # Playing: fire-and-forget — clear immediately so
+                        # Playing: fire-and-forget  --  clear immediately so
                         # playback proceeds normally (no nudge loop).
                         self._seeking = False
                         self._seek_confirm_retries = 0
@@ -532,7 +532,7 @@ class OFS_Videoplayer:
         if self._render_ctx is None:
             return
 
-        # ── Buffering detection ───────────────────────────────────────
+        # -- Buffering detection ---------------------------------------
         if not self._paused and self._video_loaded:
             now = _time.monotonic()
             if self._last_progress_wall > 0 and (now - self._last_progress_wall) > 0.7:
@@ -552,7 +552,7 @@ class OFS_Videoplayer:
         # rendering so the texture keeps the pre-seek frame until the new
         # position is decoded (prevents flash of intermediate keyframe).
         # EXCEPTION: small seeks (frame-steps, scrubbing) always render
-        # immediately — the visual cost of one wrong keyframe flash is
+        # immediately  --  the visual cost of one wrong keyframe flash is
         # much less than the latency of a frozen texture.
         if self._seeking and self._paused and not self._seek_is_small:
             if _time.monotonic() - self._seek_start_wall > 0.8:
@@ -653,7 +653,7 @@ class OFS_Videoplayer:
             self._seeking = False
 
     def SetPositionPercent(self, pct: float, pauses: bool = False) -> None:
-        """Seek to a normalised position (0–1). Mirrors ``OFS_Videoplayer::SetPositionPercent``."""
+        """Seek to a normalised position (0-1). Mirrors ``OFS_Videoplayer::SetPositionPercent``."""
         if not self._mpv:
             return
         self._logical_pos = pct * self._duration
@@ -724,7 +724,7 @@ class OFS_Videoplayer:
         self.SetSpeed(self._speed + delta)
 
     def SetVolume(self, volume: float) -> None:
-        """Set audio volume (0–100). Mirrors ``OFS_Videoplayer::SetVolume``."""
+        """Set audio volume (0-100). Mirrors ``OFS_Videoplayer::SetVolume``."""
         if not self._mpv:
             return
         self._volume = max(0.0, min(100.0, volume))
@@ -809,11 +809,11 @@ class OFS_Videoplayer:
         return self.CurrentTime()
 
     def CurrentPlayerPosition(self) -> float:
-        """Current position as a normalised 0–1 value. Mirrors ``MpvDataCache::percentPos``."""
+        """Current position as a normalised 0-1 value. Mirrors ``MpvDataCache::percentPos``."""
         return self._percent_pos
 
     def CurrentPercentPosition(self) -> float:
-        """Logical position as a 0–1 fraction. Mirrors ``OFS_Videoplayer::CurrentPercentPosition``."""
+        """Logical position as a 0-1 fraction. Mirrors ``OFS_Videoplayer::CurrentPercentPosition``."""
         if self._duration > 0:
             return self._logical_pos / self._duration
         return 0.0
@@ -843,7 +843,7 @@ class OFS_Videoplayer:
         return self._actual_speed
 
     def Volume(self) -> float:
-        """Current audio volume (0–100). Mirrors ``MpvDataCache::volume``."""
+        """Current audio volume (0-100). Mirrors ``MpvDataCache::volume``."""
         return self._volume
 
     def VideoPath(self) -> str:

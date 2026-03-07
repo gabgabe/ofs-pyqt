@@ -1,5 +1,5 @@
 """
-RoutingMatrix — zero-latency signal router.
+RoutingMatrix  --  zero-latency signal router.
 
 Connects *input axes* (funscript tracks, incoming WebSocket axes) to
 *output axes* (outgoing WS axes, device channels) through a sparse
@@ -11,14 +11,14 @@ Architecture
 ============
 ::
 
-    ┌─ INPUTS ────────────────────────────┐      ┌─ OUTPUTS ──────────────────────┐
-    │                                     │      │                                │
-    │  Funscript track → current value  ──┼──────┼→  OFS WS axis (broadcast)     │
-    │  WS input axis   → live value     ──┼──────┼→  Custom WS output axis       │
-    │                                     │      │  Device channel (serial/BLE)   │
-    └─────────────────────────────────────┘      └────────────────────────────────┘
+    +- INPUTS ----------------------------+      +- OUTPUTS ----------------------+
+    |                                     |      |                                |
+    |  Funscript track -> current value  --+------+->  OFS WS axis (broadcast)     |
+    |  WS input axis   -> live value     --+------+->  Custom WS output axis       |
+    |                                     |      |  Device channel (serial/BLE)   |
+    +-------------------------------------+      +--------------------------------+
 
-The matrix is a dict of  ``(input_id, output_id) → RouteLink``.
+The matrix is a dict of  ``(input_id, output_id) -> RouteLink``.
 Each RouteLink carries an optional gain/invert/offset so users can
 scale or remap the signal per-connection.
 
@@ -77,7 +77,7 @@ class RouteNode:
     kind: NodeKind
     label: str = ""                 # human-readable name shown in the matrix
     axis_name: str = ""             # e.g. "stroke", "channel_a"
-    group: str = ""                 # grouping key (device instance id, ws instance name…)
+    group: str = ""                 # grouping key (device instance id, ws instance name...)
     # For FUNSCRIPT_TRACK inputs: which timeline track feeds this node
     track_id: str = ""              # timeline Track.id
     # For DEVICE_CHANNEL outputs: which device model
@@ -119,17 +119,25 @@ class RouteNode:
 
 @dataclass
 class RouteLink:
-    """Transform applied on a single input→output connection."""
+    """Transform applied on a single input->output connection."""
     enabled: bool = True
     gain: float = 1.0        # multiplier (1.0 = passthrough)
     offset: float = 0.0      # added after gain  (in 0-100 space)
     invert: bool = False      # flip: value = 100 - value
+    # Output range mapping (default 0-100 = full range)
+    out_min: float = 0.0      # floor of output range  (0-100 space)
+    out_max: float = 100.0    # ceiling of output range (0-100 space)
 
     def apply(self, v: float) -> float:
         if self.invert:
             v = 100.0 - v
         v = v * self.gain + self.offset
-        return max(0.0, min(100.0, v))
+        v = max(0.0, min(100.0, v))
+        # Map 0-100 -> out_min..out_max
+        if self.out_min != 0.0 or self.out_max != 100.0:
+            v = self.out_min + (v / 100.0) * (self.out_max - self.out_min)
+            v = max(0.0, min(100.0, v))
+        return v
 
     def to_dict(self) -> dict:
         return {
@@ -137,6 +145,8 @@ class RouteLink:
             "gain": self.gain,
             "offset": self.offset,
             "invert": self.invert,
+            "out_min": self.out_min,
+            "out_max": self.out_max,
         }
 
     @classmethod
@@ -146,6 +156,8 @@ class RouteLink:
             gain=float(d.get("gain", 1.0)),
             offset=float(d.get("offset", 0.0)),
             invert=bool(d.get("invert", False)),
+            out_min=float(d.get("out_min", 0.0)),
+            out_max=float(d.get("out_max", 100.0)),
         )
 
 
@@ -157,14 +169,14 @@ class RouteLink:
 class WSInputInstance:
     """A custom WebSocket input source (an external controller).
 
-    Each instance can carry multiple axes — e.g. a multi-axis
+    Each instance can carry multiple axes  --  e.g. a multi-axis
     controller sending ``{"axes": {"stroke": 50, "twist": 30}}``.
     Axes are created dynamically when the first message arrives or
     when the user pre-configures them in the UI.
     """
     id: str                                # unique instance id
     name: str = "WS Input"                 # user-visible name
-    axes: Dict[str, float] = field(default_factory=dict)   # axis_name → latest value
+    axes: Dict[str, float] = field(default_factory=dict)   # axis_name -> latest value
 
     def to_dict(self) -> dict:
         return {"id": self.id, "name": self.name, "axes": list(self.axes.keys())}
@@ -228,12 +240,12 @@ class DeviceInstance:
 
 
 # ---------------------------------------------------------------------------
-# RoutingMatrix — the engine
+# RoutingMatrix  --  the engine
 # ---------------------------------------------------------------------------
 
 class RoutingMatrix:
     """
-    Sparse input→output signal routing engine.
+    Sparse input->output signal routing engine.
 
     **Where is routing computed?**
     ``Process(time_s)`` is called once per frame from ``_pre_new_frame()``
@@ -249,11 +261,11 @@ class RoutingMatrix:
     """
 
     def __init__(self) -> None:
-        # Node registries  (id → RouteNode)
+        # Node registries  (id -> RouteNode)
         self.inputs:  Dict[str, RouteNode] = {}
         self.outputs: Dict[str, RouteNode] = {}
 
-        # Connection matrix  (input_id, output_id) → RouteLink
+        # Connection matrix  (input_id, output_id) -> RouteLink
         self.links: Dict[Tuple[str, str], RouteLink] = {}
 
         # Instance registries
@@ -261,11 +273,11 @@ class RoutingMatrix:
         self.ws_outputs: Dict[str, WSOutputInstance] = {}
         self.devices:    Dict[str, DeviceInstance]    = {}
 
-        # Callbacks — the app wires these so Process() can read live values
+        # Callbacks  --  the app wires these so Process() can read live values
         self._get_funscript_value: Optional[Callable[[str, float], float]] = None
-        # track_id, time_s → 0–100
+        # track_id, time_s -> 0-100
 
-        # Output value snapshot (output_id → value) — consumed by backends
+        # Output value snapshot (output_id -> value)  --  consumed by backends
         self.output_values: Dict[str, float] = {}
 
         # Ordered lists for UI (rebuilt when nodes change)
@@ -278,11 +290,11 @@ class RoutingMatrix:
     # ------------------------------------------------------------------
 
     def SetFunscriptValueGetter(self, fn: Callable[[str, float], float]) -> None:
-        """Register ``fn(track_id, time_s) → 0-100`` for reading funscript data."""
+        """Register ``fn(track_id, time_s) -> 0-100`` for reading funscript data."""
         self._get_funscript_value = fn
 
     # ------------------------------------------------------------------
-    # Node management — inputs
+    # Node management  --  inputs
     # ------------------------------------------------------------------
 
     def add_funscript_input(self, track_id: str, label: str) -> RouteNode:
@@ -363,7 +375,7 @@ class RoutingMatrix:
             inst.axes[axis_name] = max(0.0, min(100.0, value))
 
     # ------------------------------------------------------------------
-    # Node management — outputs
+    # Node management  --  outputs
     # ------------------------------------------------------------------
 
     def rebuild_ofs_ws_outputs(self) -> None:
@@ -428,8 +440,14 @@ class RoutingMatrix:
         self._dirty = True
 
     def add_device_instance(self, model_id: str,
-                            name: str = "") -> Optional[DeviceInstance]:
-        """Instantiate a device from the catalogue and create output nodes."""
+                            name: str = "",
+                            axes: List[str] | None = None) -> Optional[DeviceInstance]:
+        """Instantiate a device from the catalogue.
+
+        If *axes* is ``None`` the device is created with **no** output
+        nodes -- the user adds channels individually via the tree menu.
+        Pass a list of axis names to pre-populate specific channels.
+        """
         model = DEVICE_CATALOGUE.get(model_id)
         if not model:
             log.warning(f"Unknown device model: {model_id}")
@@ -440,39 +458,105 @@ class RoutingMatrix:
             name=name or model.label,
         )
         self.devices[inst.id] = inst
-        for ax in model.axes:
-            nid = f"dev_{inst.id}_{ax.name}"
-            self.outputs[nid] = RouteNode(
-                id=nid,
-                kind=NodeKind.DEVICE_CHANNEL,
-                label=f"{inst.name} / {ax.label}",
-                axis_name=ax.name,
-                group=f"Dev: {inst.name}",
-                device_model_id=model_id,
-                device_instance_id=inst.id,
-            )
+        if axes:
+            ax_map = {a.name: a for a in model.axes}
+            for ax_name in axes:
+                ax = ax_map.get(ax_name)
+                if ax:
+                    nid = f"dev_{inst.id}_{ax.name}"
+                    self.outputs[nid] = RouteNode(
+                        id=nid,
+                        kind=NodeKind.DEVICE_CHANNEL,
+                        label=f"{inst.name} / {ax.label}",
+                        axis_name=ax.name,
+                        group=f"Dev: {inst.name}",
+                        device_model_id=model_id,
+                        device_instance_id=inst.id,
+                    )
         self._dirty = True
         return inst
+
+    def add_device_channel(self, instance_id: str, axis_name: str) -> Optional[RouteNode]:
+        """Add a single output channel to an existing device instance."""
+        inst = self.devices.get(instance_id)
+        if not inst:
+            return None
+        model = DEVICE_CATALOGUE.get(inst.model_id)
+        if not model:
+            return None
+        ax = None
+        for a in model.axes:
+            if a.name == axis_name:
+                ax = a
+                break
+        if not ax:
+            return None
+        nid = f"dev_{inst.id}_{ax.name}"
+        if nid in self.outputs:
+            return self.outputs[nid]  # already present
+        node = RouteNode(
+            id=nid,
+            kind=NodeKind.DEVICE_CHANNEL,
+            label=f"{inst.name} / {ax.label}",
+            axis_name=ax.name,
+            group=f"Dev: {inst.name}",
+            device_model_id=inst.model_id,
+            device_instance_id=inst.id,
+        )
+        self.outputs[nid] = node
+        self._dirty = True
+        return node
+
+    def remove_device_channel(self, instance_id: str, axis_name: str) -> None:
+        """Remove a single output channel from a device instance."""
+        nid = f"dev_{instance_id}_{axis_name}"
+        self.outputs.pop(nid, None)
+        self._remove_links_for(nid, is_output=True)
+        self._dirty = True
+
+    def get_device_channels(self, instance_id: str) -> List[str]:
+        """Return axis names currently exposed for a device instance."""
+        prefix = f"dev_{instance_id}_"
+        return [
+            n.axis_name for n in self.outputs.values()
+            if n.id.startswith(prefix) and n.kind == NodeKind.DEVICE_CHANNEL
+        ]
 
     def remove_device_instance(self, instance_id: str) -> None:
         inst = self.devices.pop(instance_id, None)
         if not inst:
             return
-        model = DEVICE_CATALOGUE.get(inst.model_id)
-        if model:
-            for ax in model.axes:
-                nid = f"dev_{inst.id}_{ax.name}"
-                self.outputs.pop(nid, None)
-                self._remove_links_for(nid, is_output=True)
+        # Remove all output nodes belonging to this instance
+        prefix = f"dev_{instance_id}_"
+        to_del = [nid for nid in self.outputs if nid.startswith(prefix)]
+        for nid in to_del:
+            self.outputs.pop(nid, None)
+            self._remove_links_for(nid, is_output=True)
         self._dirty = True
 
     # ------------------------------------------------------------------
     # Link management
     # ------------------------------------------------------------------
 
+    def _clear_other_inputs(self, input_id: str, output_id: str) -> None:
+        """Interlock: remove every link that drives *output_id* from a different input."""
+        to_remove = [
+            k for k in self.links
+            if k[1] == output_id and k[0] != input_id
+        ]
+        for k in to_remove:
+            del self.links[k]
+
     def set_link(self, input_id: str, output_id: str,
                  enabled: bool = True, **kwargs) -> RouteLink:
-        """Create or update a connection between input and output."""
+        """Create or update a connection between input and output.
+
+        Interlock: each output can only be driven by ONE input.
+        Setting a new link automatically removes any other link to the
+        same output.
+        """
+        if enabled:
+            self._clear_other_inputs(input_id, output_id)
         key = (input_id, output_id)
         if key in self.links:
             link = self.links[key]
@@ -489,13 +573,19 @@ class RoutingMatrix:
         self.links.pop((input_id, output_id), None)
 
     def toggle_link(self, input_id: str, output_id: str) -> bool:
-        """Toggle a connection. Returns new state (True=connected)."""
+        """Toggle a connection. Returns new state (True=connected).
+
+        Interlock: enabling a link clears all other inputs to this output.
+        """
         key = (input_id, output_id)
         if key in self.links:
             lnk = self.links[key]
             lnk.enabled = not lnk.enabled
+            if lnk.enabled:
+                self._clear_other_inputs(input_id, output_id)
             return lnk.enabled
         else:
+            self._clear_other_inputs(input_id, output_id)
             self.links[key] = RouteLink(enabled=True)
             return True
 
@@ -507,7 +597,7 @@ class RoutingMatrix:
         return self.links.get((input_id, output_id))
 
     # ------------------------------------------------------------------
-    # Processing (called once per frame — zero allocation hot path)
+    # Processing (called once per frame  --  zero allocation hot path)
     # ------------------------------------------------------------------
 
     def Process(self, time_s: float) -> None:
@@ -588,7 +678,7 @@ class RoutingMatrix:
         ws.sort(key=lambda n: (n.group, n.axis_name))
         self._input_order = [n.id for n in fs] + [n.id for n in ws]
 
-        # Outputs: OFS WS → custom WS → devices
+        # Outputs: OFS WS -> custom WS -> devices
         ofs_ws = [n for n in self.outputs.values() if n.kind == NodeKind.OFS_WS_OUTPUT]
         cust_ws = [n for n in self.outputs.values() if n.kind == NodeKind.WS_OUTPUT]
         devs = [n for n in self.outputs.values() if n.kind == NodeKind.DEVICE_CHANNEL]
@@ -612,10 +702,17 @@ class RoutingMatrix:
             d["output_id"] = o
             links_list.append(d)
 
+        # Save per-device which channels are exposed
+        dev_list = []
+        for inst in self.devices.values():
+            dd = inst.to_dict()
+            dd["channels"] = self.get_device_channels(inst.id)
+            dev_list.append(dd)
+
         return {
             "ws_inputs":  [inst.to_dict() for inst in self.ws_inputs.values()],
             "ws_outputs": [inst.to_dict() for inst in self.ws_outputs.values()],
-            "devices":    [inst.to_dict() for inst in self.devices.values()],
+            "devices":    dev_list,
             "links":      links_list,
         }
 
@@ -649,11 +746,14 @@ class RoutingMatrix:
                             axis_name=ax, group=f"WS Out: {inst.name}",
                         )
 
-        # Devices
+        # Devices -- restore only the channels that were saved
         for dd in d.get("devices", []):
             inst = DeviceInstance.from_dict(dd)
+            channels = dd.get("channels", [])
             if inst.id not in self.devices:
-                self.add_device_instance(inst.model_id, inst.name)
+                self.add_device_instance(
+                    inst.model_id, inst.name,
+                    axes=channels if channels else None)
 
         # Links
         for ld in d.get("links", []):

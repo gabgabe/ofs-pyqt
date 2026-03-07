@@ -1,5 +1,5 @@
 """
-OFS Event System — Python port of OFS_EventSystem.h / OFS_Event.h
+OFS Event System  --  Python port of OFS_EventSystem.h / OFS_Event.h
 
 Replaces Qt signals everywhere. Simple callable-based event bus.
 Mirrors OFS EV::Queue().appendListener() / EV::Enqueue<T>() / EV::Process().
@@ -10,7 +10,7 @@ Usage:
     # Register listener
     EV.listen("VideoLoaded", lambda path: print(f"Loaded: {path}"))
 
-    # Enqueue event (deferred — processed next EV.process() call)
+    # Enqueue event (deferred  --  processed next EV.process() call)
     EV.enqueue("VideoLoaded", path="/some/video.mp4")
 
     # Direct dispatch (immediate, synchronous)
@@ -92,7 +92,7 @@ class TypedEvent:
     """Base class for typed events."""
     pass
 
-# ── Video ──────────────────────────────────────────────────────────────
+# -- Video --------------------------------------------------------------
 @dataclass(frozen=True)
 class VideoLoadedEvent(TypedEvent):
     path: str = ""
@@ -113,7 +113,7 @@ class PlayPauseChangeEvent(TypedEvent):
 class PlaybackSpeedChangeEvent(TypedEvent):
     speed: float = 1.0
 
-# ── Timeline / Transport ──────────────────────────────────────────────
+# -- Timeline / Transport ----------------------------------------------
 @dataclass(frozen=True)
 class TimelineSeekEvent(TypedEvent):
     time: float = 0.0
@@ -140,7 +140,7 @@ class LayerMuteEvent(TypedEvent):
 class LayoutChangedEvent(TypedEvent):
     pass
 
-# ── Buffering ─────────────────────────────────────────────────────────
+# -- Buffering ---------------------------------------------------------
 @dataclass(frozen=True)
 class BufferingEvent(TypedEvent):
     """Fired when a video player enters or exits buffering state."""
@@ -149,7 +149,7 @@ class BufferingEvent(TypedEvent):
 
 
 # ---------------------------------------------------------------------------
-# EventSystem — the bus
+# EventSystem  --  the bus
 # ---------------------------------------------------------------------------
 
 class EventSystem:
@@ -159,7 +159,7 @@ class EventSystem:
     All ``EV.enqueue()`` calls are deferred and processed on the next ``EV.process()``
     call, which must be called from the main thread (like ``EV::Process()`` in C++).
 
-    ``EV.dispatch()`` is immediate / synchronous — use for same-frame reactions.
+    ``EV.dispatch()`` is immediate / synchronous  --  use for same-frame reactions.
     """
 
     _instance: "EventSystem | None" = None
@@ -244,5 +244,5 @@ class EventSystem:
                     traceback.print_exc()
 
 
-# Singleton — mirrors OFS EV namespace
+# Singleton  --  mirrors OFS EV namespace
 EV = EventSystem.get()

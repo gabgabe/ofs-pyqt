@@ -1,4 +1,4 @@
-"""Funscript data model — Python port of OFS ``Funscript/Funscript.h`` and ``Funscript/Funscript.cpp``.
+"""Funscript data model  --  Python port of OFS ``Funscript/Funscript.h`` and ``Funscript/Funscript.cpp``.
 
 Mirrors the core OFS funscript data structures and editing operations including
 action arrays (``FunscriptArray``), selection management, spline interpolation
@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 
 @dataclass(order=True)
 class FunscriptAction:
-    """Single action point (time in ms + position 0–100). Mirrors ``FunscriptAction`` in ``FunscriptAction.h``."""
+    """Single action point (time in ms + position 0-100). Mirrors ``FunscriptAction`` in ``FunscriptAction.h``."""
 
     at: int   # milliseconds
     pos: int  # 0-100
@@ -145,7 +145,7 @@ class FunscriptActionArray:
     # ---- lookup ----
 
     def GetAtTime(self, time_s: float, tolerance_s: float = 0.0) -> Optional[FunscriptAction]:
-        """Get action at *time_s* ± *tolerance_s*. Mirrors ``Funscript::getActionAtTime``."""
+        """Get action at *time_s* +/- *tolerance_s*. Mirrors ``Funscript::getActionAtTime``."""
         at = int(time_s * 1000)
         tol = int(tolerance_s * 1000)
         times = [a.at for a in self._actions]
@@ -208,7 +208,7 @@ class FunscriptActionArray:
         return self._actions[lo:hi]
 
     def LowerBound(self, at_ms: int) -> int:
-        """Index of first action ≥ *at_ms*. Mirrors ``FunscriptArray::lower_bound``."""
+        """Index of first action >= *at_ms*. Mirrors ``FunscriptArray::lower_bound``."""
         return bisect.bisect_left([a.at for a in self._actions], at_ms)
 
     def Interpolate(self, at_ms: float) -> float:
@@ -231,7 +231,7 @@ class FunscriptActionArray:
         """Catmull-Rom spline interpolation of position at *at_ms*.
 
         Mirrors ``FunscriptSpline::catmul_rom_spline_alt`` from ``FunscriptSpline.h``.
-        Returns value in 0–100 range.
+        Returns value in 0-100 range.
         """
         acts = self._actions
         n = len(acts)
@@ -375,7 +375,7 @@ class Funscript:
         self.unsaved_edits: bool = False
         self._edit_time = None
 
-        # Per-script undo system — set up lazily to avoid circular imports
+        # Per-script undo system  --  set up lazily to avoid circular imports
         self.undo_system: Optional["FunscriptUndoSystem"] = None
         # Callback list for actions-changed notifications (Qt-independent)
         self._actions_changed_callbacks: List = []
@@ -702,7 +702,7 @@ class Funscript:
         self._mark_edited()
 
     def InvertSelection(self) -> None:
-        """Flip selected actions (pos → 100 − pos). Mirrors ``Funscript::InvertSelection``."""
+        """Flip selected actions (pos -> 100 - pos). Mirrors ``Funscript::InvertSelection``."""
         new_sel = []
         for a in list(self.selection):
             new_a = FunscriptAction(a.at, 100 - a.pos)
@@ -719,7 +719,7 @@ class Funscript:
     # ============================================================
 
     def GetActionAtTime(self, time_s: float, tolerance_s: float = 0.0) -> Optional[FunscriptAction]:
-        """Get action at *time_s* ± *tolerance_s*. Mirrors ``Funscript::GetActionAtTime``."""
+        """Get action at *time_s* +/- *tolerance_s*. Mirrors ``Funscript::GetActionAtTime``."""
         return self.actions.GetAtTime(time_s, tolerance_s)
 
     def GetClosestAction(self, time_s: float) -> Optional[FunscriptAction]:
@@ -753,7 +753,7 @@ class Funscript:
     def AddMultipleActions(self, new_actions: List[FunscriptAction]) -> None:
         """Batch-insert a list of actions efficiently (single sort pass).
 
-        Mirrors OFS Funscript::AddMultipleActions — avoids O(n²) repeated
+        Mirrors OFS Funscript::AddMultipleActions  --  avoids O(n^2) repeated
         bisect insertions when adding many points at once (e.g. from recording
         or paste operations).
         """
@@ -798,7 +798,7 @@ class Funscript:
         """Stroke-aware range extension. Mirrors ``Funscript::RangeExtendSelection``.
 
         Args:
-            range_extend: Value in -50…100. Positive pushes highs higher and lows
+            range_extend: Value in -50...100. Positive pushes highs higher and lows
                 lower; negative compresses toward each stroke's centre.
         """
         if range_extend == 0:

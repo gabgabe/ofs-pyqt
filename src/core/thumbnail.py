@@ -1,7 +1,7 @@
 """
-VideoThumbnailManager — secondary mpv instance for timeline hover previews.
+VideoThumbnailManager  --  secondary mpv instance for timeline hover previews.
 
-A separate mpv render context renders into a small 320×180 FBO.
+A separate mpv render context renders into a small 320x180 FBO.
 The caller queries `texture` each frame; if non-zero it is ready to show
 as an ImGui image.
 
@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 
 THUMB_W = 320
 THUMB_H = 180
-THUMB_DEBOUNCE_S = 0.08   # 80 ms — wait for mouse to settle before seeking
+THUMB_DEBOUNCE_S = 0.08   # 80 ms  --  wait for mouse to settle before seeking
 
 try:
     import mpv as _mpv_module
@@ -105,7 +105,7 @@ class VideoThumbnailManager:
             self._mpv = _mpv_module.MPV(vo="libmpv")
             self._mpv["pause"]     = True
             self._mpv["loop-file"] = "inf"
-            self._mpv["aid"]       = "no"   # no audio decoding — faster seek
+            self._mpv["aid"]       = "no"   # no audio decoding  --  faster seek
             self._mpv["sid"]       = "no"   # no subtitles
         except Exception as exc:
             log.warning("Thumbnail mpv init failed: %s", exc)
@@ -130,7 +130,7 @@ class VideoThumbnailManager:
             return False
 
         self._ensure_fbo()
-        log.info("VideoThumbnailManager initialised (%d×%d)", THUMB_W, THUMB_H)
+        log.info("VideoThumbnailManager initialised (%dx%d)", THUMB_W, THUMB_H)
         return True
 
     def Shutdown(self) -> None:
@@ -171,7 +171,7 @@ class VideoThumbnailManager:
         """
         Queue a thumbnail at *time_s* in *path*. Mirrors ``VideoThumbnailManager::RequestFrame``.
 
-        Debounced — actual seek only happens after ``THUMB_DEBOUNCE_S`` of inactivity.
+        Debounced  --  actual seek only happens after ``THUMB_DEBOUNCE_S`` of inactivity.
         """
         self._pending_path = path
         self._pending_time = time_s
@@ -289,7 +289,7 @@ class VideoThumbnailManager:
                 gl.GL_TEXTURE_2D, self._texture, 0,
             )
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
-            log.debug("Thumbnail FBO created (%d×%d)", THUMB_W, THUMB_H)
+            log.debug("Thumbnail FBO created (%dx%d)", THUMB_W, THUMB_H)
         except Exception as exc:
             log.warning("Thumbnail FBO create failed: %s", exc)
 

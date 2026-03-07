@@ -1,9 +1,9 @@
 """
-SpecialFunctionsWindow — Python port of OFS_SpecialFunctions.h / .cpp
+SpecialFunctionsWindow  --  Python port of OFS_SpecialFunctions.h / .cpp
 
 Two functions exposed via a combo selector (OFS style):
-  0 — Range Extender
-  1 — Simplify (RDP)
+  0  --  Range Extender
+  1  --  Simplify (RDP)
 """
 
 from __future__ import annotations
@@ -64,10 +64,10 @@ class SpecialFunctionsWindow:
         # RDP
         self._rdp_epsilon:    float = 2.0
         # Range Extender
-        self._range_extend:   int   = 0      # live value -50…100
+        self._range_extend:   int   = 0      # live value -50...100
         self._range_drag_active: bool = False  # True while slider is held
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def Show(
         self,
@@ -95,7 +95,7 @@ class SpecialFunctionsWindow:
     def _draw(self, script: Optional[Funscript], undo: UndoSystem) -> None:
         has_sel = bool(script and script.HasSelection())
 
-        # ── Function selector combo ───────────────────────────────────
+        # -- Function selector combo -----------------------------------
         imgui.set_next_item_width(180)
         ch, new_idx = imgui.combo("##funcsel", self._selected_func, _FUNC_NAMES)
         if ch:
@@ -108,9 +108,9 @@ class SpecialFunctionsWindow:
         else:
             self._draw_rdp(script, undo, has_sel)
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Range Extender
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _draw_range_extender(
         self,
@@ -157,9 +157,9 @@ class SpecialFunctionsWindow:
         if not has_sel:
             self._disabled_hint()
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # RDP Simplify
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _draw_rdp(
         self,
@@ -167,7 +167,7 @@ class SpecialFunctionsWindow:
         undo:    UndoSystem,
         has_sel: bool,
     ) -> None:
-        imgui.text_disabled("Remove redundant points using Ramer–Douglas–Peucker")
+        imgui.text_disabled("Remove redundant points using Ramer-Douglas-Peucker")
         imgui.spacing()
 
         imgui.set_next_item_width(150)
@@ -184,9 +184,9 @@ class SpecialFunctionsWindow:
         if not has_sel:
             self._disabled_hint()
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Operations
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _do_rdp(self, script: Funscript, undo: UndoSystem) -> None:
         sel = sorted(list(script.selection), key=lambda a: a.at)

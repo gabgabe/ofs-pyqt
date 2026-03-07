@@ -1,5 +1,5 @@
 """
-ChapterManagerWindow — Python port of OFS_ChapterManager.h / .cpp
+ChapterManagerWindow  --  Python port of OFS_ChapterManager.h / .cpp
 
 Manages named chapters / bookmarks attached to the project.
 Chapters are persisted inside the .ofsp project file under "chapters".
@@ -95,9 +95,9 @@ class ChapterManagerWindow:
         self._export_status: str  = ""   # last status message
         self._export_busy:   bool = False
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # API called by app keybindings
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def AddChapter(self, start: float, duration: float) -> None:
         """Create a new chapter at the given time. Mirrors ``OFS_ChapterManager::AddChapter``."""
@@ -152,9 +152,9 @@ class ChapterManagerWindow:
         finally:
             self._export_busy = False
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Persistence helpers (called by app on load/save)
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def LoadFromProject(self, project: OFS_Project) -> None:
         """Restore chapters/bookmarks from project state dict. Mirrors ``OFS_ChapterManager::LoadFromProject``."""
@@ -173,7 +173,7 @@ class ChapterManagerWindow:
         project._extra_state["chapters"]  = [c.to_dict() for c in self._chapters]
         project._extra_state["bookmarks"] = [b.to_dict() for b in self._bookmarks]
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def Show(
         self,
@@ -202,7 +202,7 @@ class ChapterManagerWindow:
 
         return is_open
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _draw(self, player: OFS_Videoplayer, project: OFS_Project) -> None:
         cur      = player.CurrentTime() if player.VideoLoaded() else 0.0
@@ -216,7 +216,7 @@ class ChapterManagerWindow:
             if tl_dur > 0:
                 duration = tl_dur
 
-        # ── Add controls ──────────────────────────────────────────────
+        # -- Add controls ----------------------------------------------
         if imgui.button("+ Chapter"):
             self.AddChapter(cur, duration)
         if imgui.is_item_hovered():
@@ -235,7 +235,7 @@ class ChapterManagerWindow:
         imgui.separator()
         imgui.spacing()
 
-        # ── Chapters table ─────────────────────────────────────────────
+        # -- Chapters table ---------------------------------------------
         table_flags = (
             imgui.TableFlags_.borders_inner_v
             | imgui.TableFlags_.row_bg
@@ -309,14 +309,14 @@ class ChapterManagerWindow:
                 if imgui.is_item_hovered():
                     imgui.set_tooltip("Seek to chapter start")
                 imgui.same_line(spacing=2)
-                if imgui.small_button("▶##chsetbegin"):
+                if imgui.small_button(">##chsetbegin"):
                     ch.start = cur
                     if ch.start > ch.end:
                         ch.end = ch.start
                 if imgui.is_item_hovered():
                     imgui.set_tooltip("Set Begin to current time")
                 imgui.same_line(spacing=2)
-                if imgui.small_button("◀##chsetend"):
+                if imgui.small_button("<##chsetend"):
                     ch.end = cur
                     if ch.end < ch.start:
                         ch.start = ch.end
@@ -361,7 +361,7 @@ class ChapterManagerWindow:
             imgui.text_small(self._export_status)
             imgui.pop_style_color()
 
-        # ── Inline color picker popup ──────────────────────────────────
+        # -- Inline color picker popup ----------------------------------
         if self._color_ch_idx >= 0:
             imgui.open_popup("##chcolor")
         if imgui.begin_popup("##chcolor"):
@@ -381,7 +381,7 @@ class ChapterManagerWindow:
         imgui.spacing()
         imgui.separator()
 
-        # ── Bookmarks table ────────────────────────────────────────────
+        # -- Bookmarks table --------------------------------------------
         imgui.text("Bookmarks")
         bm_table_h = min(120, max(30, len(self._bookmarks) * 22 + 28))
         if imgui.begin_table("##bmtable", 3, table_flags, ImVec2(-1, bm_table_h)):
@@ -431,7 +431,7 @@ class ChapterManagerWindow:
             if del_bm >= 0:
                 self._bookmarks.pop(del_bm)
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     @staticmethod
     def _ts(t: float) -> str:

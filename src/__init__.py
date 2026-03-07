@@ -1,1 +1,1 @@
-"""OFS-PyQt — Python port of OpenFunscripter."""
+"""OFS-PyQt  --  Python port of OpenFunscripter."""

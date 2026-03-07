@@ -1,4 +1,4 @@
-"""ImGui UI layer — app, panels, timeline, controls."""
+"""ImGui UI layer  --  app, panels, timeline, controls."""
 
 __all__ = [
     "app",

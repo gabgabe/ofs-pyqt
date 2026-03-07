@@ -1,15 +1,15 @@
 """
-ScriptTimeline — Python port of ScriptTimeline.h / ScriptTimeline.cpp
+ScriptTimeline  --  Python port of ScriptTimeline.h / ScriptTimeline.cpp
 
 Custom ImGui DrawList rendering:
-  • Action dots (filled circles + connecting lines)
-  • Selection rectangle (Ctrl+drag)
-  • Click to seek
-  • Left-click on action → select / move
-  • Multi-track display (one lane per loaded funscript)
-  • Waveform-style background heat gradient (optional)
-  • Middle mouse drag → scroll timeline
-  • Scroll wheel → zoom timeline
+  * Action dots (filled circles + connecting lines)
+  * Selection rectangle (Ctrl+drag)
+  * Click to seek
+  * Left-click on action -> select / move
+  * Multi-track display (one lane per loaded funscript)
+  * Waveform-style background heat gradient (optional)
+  * Middle mouse drag -> scroll timeline
+  * Scroll wheel -> zoom timeline
 
 DAW-mode extension:
   When a TimelineManager is provided to Show(), the timeline renders in
@@ -36,11 +36,12 @@ from src.core.tempo        import BEAT_MULTIPLES, BEAT_COLORS_RGBA
 if TYPE_CHECKING:
     from src.core.timeline_manager import TimelineManager
     from src.core.timeline import Layer, Track
+    from src.core.control_cue import ControlCue
     from src.ui.ui_colors import UIColors
 
 
 def _col32(r: float, g: float, b: float, a: float = 1.0) -> int:
-    """Pack floats (0‥1) into Dear ImGui IM_COL32 ABGR integer — no context needed."""
+    """Pack floats (0..1) into Dear ImGui IM_COL32 ABGR integer  --  no context needed."""
     return (int(a * 255) << 24) | (int(b * 255) << 16) | (int(g * 255) << 8) | int(r * 255)
 
 
@@ -51,7 +52,7 @@ def _fmt_time(t: float) -> str:
     return f"{m}:{s:04.1f}"
 
 
-# ── Colours ───────────────────────────────────────────────────────────────
+# -- Colours ---------------------------------------------------------------
 COL_TIMELINE_BG     = _col32(0.10, 0.10, 0.10, 1.00)
 COL_CURSOR          = _col32(1.00, 1.00, 1.00, 0.90)
 COL_ACTION          = _col32(0.30, 0.70, 0.30, 1.00)
@@ -81,10 +82,10 @@ MAX_DOT_RADIUS      = 7.0
 # Default visible time window (seconds)
 DEFAULT_VISIBLE_SECS = 5.0
 
-# ── Tempo overlay beat colors — built from shared BEAT_COLORS_RGBA ────────────
+# -- Tempo overlay beat colors  --  built from shared BEAT_COLORS_RGBA ------------
 _TEMPO_BEAT_COLORS = [_col32(*c) for c in BEAT_COLORS_RGBA]
 
-# ── DAW-mode colours ─────────────────────────────────────────────────────────
+# -- DAW-mode colours ---------------------------------------------------------
 COL_DAW_BG           = _col32(0.08, 0.08, 0.08, 1.00)
 COL_DAW_LAYER_ALT    = _col32(0.12, 0.12, 0.12, 1.00)
 COL_DAW_LAYER_BORDER = _col32(0.25, 0.25, 0.25, 0.60)
@@ -100,7 +101,7 @@ COL_DAW_LABEL_MUTED  = _col32(0.55, 0.35, 0.35, 1.00)
 
 DAW_RULER_H          = 22.0      # px height for the top time-ruler
 DAW_LABEL_W          = 100.0     # px width of the left layer-label column
-DAW_MIN_LAYER_H      = 80.0      # px — minimum height per layer row
+DAW_MIN_LAYER_H      = 80.0      # px  --  minimum height per layer row
 
 
 class ScriptTimeline:
@@ -119,7 +120,7 @@ class ScriptTimeline:
         self._zoom_time: float           = 0.0                   # monotonic sec of last zoom
         self._scroll_offset: float = 0.0  # seconds offset (for non-following mode)
 
-        # Cached draw_map (list of enabled script indices) — rebuilt each Show()
+        # Cached draw_map (list of enabled script indices)  --  rebuilt each Show()
         self._draw_map: List[int] = []
 
         # Selection state (mirrors OFS: IsSelecting, absSel1, relSel2)
@@ -151,23 +152,23 @@ class ScriptTimeline:
         self.show_action_points: bool = True
         self.spline_mode: bool = False  # False=linear, True=spline
 
-        # #7 SyncLineEnable — draw a coloured vertical line at the current time
+        # #7 SyncLineEnable  --  draw a coloured vertical line at the current time
         # in addition to the white playhead (useful for recording sync)
         self.sync_line_enable: bool = False
         self.sync_line_color: tuple = (1.0, 0.2, 0.2, 0.8)  # RGBA 0-1
 
-        # #6 MaxSpeedHighlight — overlay red highlight for very-fast segments
+        # #6 MaxSpeedHighlight  --  overlay red highlight for very-fast segments
         self.show_max_speed_highlight: bool = True
         self.max_speed_color: tuple = (0.89, 0.10, 0.10, 0.55)  # RGBA 0-1
         self.max_speed_threshold: float = 500.0  # units/s
 
-        # #3 ScaleAudio — amplitude multiplier for waveform drawing
+        # #3 ScaleAudio  --  amplitude multiplier for waveform drawing
         self.waveform_scale: float = 1.0
 
         # #4 WaveformColor tint (RGBA 0-1)
         self.waveform_color: tuple = (227/255, 66/255, 52/255, 0.42)
 
-        # ── Overlay mode params (synced from ScriptingMode each frame) ────
+        # -- Overlay mode params (synced from ScriptingMode each frame) ----
         # 0=FRAME, 1=TEMPO, 2=EMPTY
         self.overlay_mode: int   = 0
         # Frame overlay
@@ -180,17 +181,17 @@ class ScriptTimeline:
         self._win_pos: ImVec2 = ImVec2(0, 0)
         self._win_size: ImVec2 = ImVec2(0, 0)
 
-        # ── Shared colour table (set from app via set_colors) ─────────────
+        # -- Shared colour table (set from app via set_colors) -------------
         self._ui_colors: Optional["UIColors"] = None
 
-        # ── DAW mode state ────────────────────────────────────────────────
+        # -- DAW mode state ------------------------------------------------
         # Currently selected track id (highlight in DAW view)
         self._selected_track_id: Optional[str] = None
         # Horizontal drag on a clip (track offset change)
         self._daw_dragging_track_id: Optional[str] = None
         self._daw_drag_start_offset: float = 0.0
         self._daw_drag_start_mx: float     = 0.0
-        # Vertical scroll offset (px) — for when layers overflow the window
+        # Vertical scroll offset (px)  --  for when layers overflow the window
         self._daw_v_scroll: float = 0.0
         # Snap: when dragging, snap track edges to nearby track edges
         self.snap_tracks: bool = True
@@ -220,19 +221,34 @@ class ScriptTimeline:
         self._daw_pending_layer_idx: int = -1
         self._DAW_DRAG_THRESHOLD: float = 5.0    # px before drag recognised
 
-        # ── Playhead drag-seek (Omakase pattern #6) ──────────────────────
+        # -- Playhead drag-seek (Omakase pattern #6) ----------------------
         self._playhead_dragging: bool = False
         self._playhead_drag_was_playing: bool = False
 
-        # ── Description pane toggle (Omakase pattern #9) ─────────────────
+        # -- Control Cue state ----------------------------------------------
+        self._cue_clipboard: Optional["ControlCue"] = None   # copy buffer
+        self._cue_edit_id: Optional[str] = None               # cue being edited
+        self._cue_edit_track_id: Optional[str] = None         # track of cue being edited
+        self._cue_edit_name: str = ""
+        self._cue_edit_type: int = 0
+        self._cue_edit_time: float = 0.0
+        self._cue_edit_color: list = [0.2, 0.7, 1.0, 0.9]
+        self._cue_edit_notes: str = ""
+        self._cue_edit_params_json: str = "{}"  # raw JSON for params
+        self._cue_dragging_id: Optional[str] = None           # cue being dragged
+        self._cue_drag_track_id: Optional[str] = None
+        self._cue_drag_start_time: float = 0.0
+        self._cue_drag_start_mx: float = 0.0
+
+        # -- Description pane toggle (Omakase pattern #9) -----------------
         self.show_labels: bool = True          # toggle layer label column
         self._label_w_anim: float = DAW_LABEL_W  # animated label width
 
-        # ── Lane minimize/maximize constants ─────────────────────────────
+        # -- Lane minimize/maximize constants -----------------------------
         self._MIN_LAYER_H: float = 16.0        # minimized height (thin bar)
         self._ANIM_SPEED: float = 12.0         # lerp speed per second
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def Init(self) -> None:
         """Initialise the timeline. Mirrors ``ScriptTimeline::Init``."""
@@ -313,16 +329,16 @@ class ScriptTimeline:
         """Animate visible-time zoom towards target (OFS: easeOutExpo lerp, 150 ms)."""
         elapsed = _time.monotonic() - self._zoom_time
         t = min(1.0, elapsed / 0.15)  # 150 ms transition
-        # easeOutExpo: x>=1 → 1, else 1 - 2^(-10x)
+        # easeOutExpo: x>=1 -> 1, else 1 - 2^(-10x)
         t_eased = 1.0 if t >= 1.0 else 1.0 - (2.0 ** (-10.0 * t))
         self._visible_secs = (
             self._prev_visible_secs
             + (self._target_visible_secs - self._prev_visible_secs) * t_eased
         )
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Main render
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def Show(
         self,
@@ -334,7 +350,7 @@ class ScriptTimeline:
         """
         Called inside the dockable window (begin/end handled by hello_imgui).
 
-        If *timeline_mgr* is provided the widget renders in **DAW mode** —
+        If *timeline_mgr* is provided the widget renders in **DAW mode**  -- 
         global transport, clip rectangles per layer, mute badges, horizontal
         drag to change track offset.
 
@@ -346,9 +362,9 @@ class ScriptTimeline:
             return
         self._show_legacy(player, scripts, active_idx)
 
-    # ══════════════════════════════════════════════════════════════════════
+    # ======================================================================
     # Legacy (video-based) rendering
-    # ══════════════════════════════════════════════════════════════════════
+    # ======================================================================
 
     def _show_legacy(
         self,
@@ -386,7 +402,7 @@ class ScriptTimeline:
             t_start = self._scroll_offset
             t_end   = self._scroll_offset + self._visible_secs
 
-        # ── Hovered track (computed BEFORE drawing so _draw_track can use it) ──
+        # -- Hovered track (computed BEFORE drawing so _draw_track can use it) --
         is_win_hovered = imgui.is_window_hovered()
         hovered_script_idx = -1
         if is_win_hovered and self._track_h > 0:
@@ -395,14 +411,14 @@ class ScriptTimeline:
             if draw_slot < len(draw_map):
                 hovered_script_idx = draw_map[draw_slot]
 
-        # ── Global timeline background ─────────────────────────────────────────
+        # -- Global timeline background -----------------------------------------
         dl.add_rect_filled(
             win_pos,
             ImVec2(win_pos.x + avail.x, win_pos.y + avail.y),
             COL_TIMELINE_BG,
         )
 
-        # ── Draw each enabled track ────────────────────────────────────────────
+        # -- Draw each enabled track --------------------------------------------
         for draw_slot, script_idx in enumerate(draw_map):
             script    = scripts[script_idx]
             track_y   = win_pos.y + draw_slot * self._track_h
@@ -415,7 +431,7 @@ class ScriptTimeline:
                 t_start, t_end, duration,
             )
 
-            # ── Playhead per track: triangle marker + thick vertical line ──
+            # -- Playhead per track: triangle marker + thick vertical line --
             if player.VideoLoaded() and duration > 0:
                 cx = self._time_to_x(current, win_pos.x, avail.x, t_start, t_end)
                 fs = imgui.get_font_size()
@@ -431,7 +447,7 @@ class ScriptTimeline:
                     _col32(1.0, 1.0, 1.0, 1.0), 4.0,
                 )
 
-            # ── SyncLine — optional coloured vertical line at current time ───
+            # -- SyncLine  --  optional coloured vertical line at current time ---
             if self.sync_line_enable and player.VideoLoaded() and duration > 0:
                 cx_s = self._time_to_x(current, win_pos.x, avail.x, t_start, t_end)
                 sl_col = _col32(*self.sync_line_color)
@@ -441,7 +457,7 @@ class ScriptTimeline:
                     sl_col, 2.5,
                 )
 
-            # ── Selection box — only on active track (OFS behaviour) ──────────
+            # -- Selection box  --  only on active track (OFS behaviour) ----------
             if self._is_selecting and is_active:
                 vt = t_end - t_start
                 rel_sel1 = ((self._abs_sel1 - t_start) / vt) if vt > 0 else 0.0
@@ -458,11 +474,11 @@ class ScriptTimeline:
                 dl.add_line(ImVec2(x2, track_y), ImVec2(x2, track_y + self._track_h),
                             COL_SEL_RECT_BORDER, 3.0)
 
-        # ── "X.XX seconds" zoom indicator ─────────────────────────────────────
+        # -- "X.XX seconds" zoom indicator -------------------------------------
         if scripts:
             self._draw_seconds_label(dl, win_pos.x, win_pos.y, avail.y, True)
 
-        # ── Single interaction button covering full timeline area ──────────────
+        # -- Single interaction button covering full timeline area --------------
         imgui.set_cursor_screen_pos(win_pos)
         imgui.invisible_button(
             "##timeline", avail,
@@ -475,7 +491,7 @@ class ScriptTimeline:
             win_pos, avail, t_start, t_end, duration,
         )
 
-        # ── Right-click context menu ───────────────────────────────────────────
+        # -- Right-click context menu -------------------------------------------
         if imgui.begin_popup_context_item("##tlctx"):
             ctx_i      = self._ctx_track_idx
             ctx_script = scripts[ctx_i] if 0 <= ctx_i < len(scripts) else None
@@ -522,9 +538,9 @@ class ScriptTimeline:
                 imgui.end_menu()
             imgui.end_popup()
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Track drawing
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     @staticmethod
     def _get_speed_color(action_curr: FunscriptAction, action_prev: FunscriptAction) -> int:
@@ -567,7 +583,7 @@ class ScriptTimeline:
             return
         frame_time = 1.0 / fps
 
-        # ── 1. Per-frame tick lines ───────────────────────────────────────
+        # -- 1. Per-frame tick lines ---------------------------------------
         MAX_VISIBLE = 400.0
         visible_frames = visible_time / frame_time
         if visible_frames < MAX_VISIBLE * 0.75:
@@ -582,7 +598,7 @@ class ScriptTimeline:
                     px = x + rx
                     dl.add_line(ImVec2(px, y), ImVec2(px, y + h), col, 1.0)
 
-        # ── 2. Time divider lines (every N frames) ────────────────────────
+        # -- 2. Time divider lines (every N frames) ------------------------
         MAX_DIVIDERS = 150.0
         n_frames_div = max(1, round(fps * 0.1))
         time_interval = n_frames_div * frame_time
@@ -665,9 +681,9 @@ class ScriptTimeline:
         t_start: float, t_end: float,
         duration: float,
     ) -> None:
-        # ── OFS-style gradient background ─────────────────────────────────
-        # Active:   purple top  (60,0,60)  → darker bottom (24,0,24)
-        # Inactive: dark-blue top (0,0,50) → darker bottom (0,0,20)
+        # -- OFS-style gradient background ---------------------------------
+        # Active:   purple top  (60,0,60)  -> darker bottom (24,0,24)
+        # Inactive: dark-blue top (0,0,50) -> darker bottom (0,0,20)
         if is_active:
             col_top    = _col32(*self._ui_colors.active_track_top) if self._ui_colors else _col32(60/255,  0,       60/255,  1.0)
             col_bottom = _col32(*self._ui_colors.active_track_bottom) if self._ui_colors else _col32(24/255,  0,       24/255,  1.0)
@@ -679,14 +695,14 @@ class ScriptTimeline:
             col_top, col_top, col_bottom, col_bottom,
         )
 
-        # ── Hover highlight (OFS: IM_COL32(255,255,255,10)) ───────────────
+        # -- Hover highlight (OFS: IM_COL32(255,255,255,10)) ---------------
         if is_hovered:
             dl.add_rect_filled(
                 ImVec2(x, y), ImVec2(x + w, y + h),
                 _col32(*self._ui_colors.track_hover_highlight) if self._ui_colors else _col32(1.0, 1.0, 1.0, 10 / 255),
             )
 
-        # ── Per-track clip rect ────────────────────────────────────────────
+        # -- Per-track clip rect --------------------------------------------
         dl.push_clip_rect(
             ImVec2(x - 3, y - 3), ImVec2(x + w + 3, y + h + 3), True
         )
@@ -694,7 +710,7 @@ class ScriptTimeline:
         # Draw height guide lines (0%, 25%, 50%, 75%, 100%)
         self._draw_height_lines(dl, x, y, w, h)
 
-        # ── Overlay grid (Frame or Tempo) ─────────────────────────────────
+        # -- Overlay grid (Frame or Tempo) ---------------------------------
         if self.overlay_mode == 0:   # FRAME
             self._draw_frame_overlay_grid(
                 dl, x, y, w, h, t_start, t_end, self.overlay_fps)
@@ -713,7 +729,7 @@ class ScriptTimeline:
             title[:20],
         )
 
-        # ── Waveform overlay (behind action lines) ────────────────────────
+        # -- Waveform overlay (behind action lines) ------------------------
         if self.show_waveform and self.waveform is not None and self.waveform.ready:
             _WV_H_SCALE = 0.72      # max fraction of track height used by wave
             wv_col = _col32(*self.waveform_color)
@@ -736,7 +752,7 @@ class ScriptTimeline:
                         )
                     col += 2
 
-        # Find visible actions (dots only — strictly within the viewport)
+        # Find visible actions (dots only  --  strictly within the viewport)
         actions = script.actions.GetActionsInRange(
             int(t_start * 1000), int(t_end * 1000)
         )
@@ -752,7 +768,7 @@ class ScriptTimeline:
             + ([next_edge] if next_edge is not None else [])
         )
 
-        # ── Draw connecting lines (with speed-based coloring) ────────────
+        # -- Draw connecting lines (with speed-based coloring) ------------
         if self.show_action_lines and len(line_actions) > 1:
             if self.spline_mode and len(line_actions) >= 2:
                 # Spline: subdivide each segment into N steps for smooth curve
@@ -804,9 +820,9 @@ class ScriptTimeline:
                             dl.add_line(p1, p2, COL_LINE_SEL, LINE_THICKNESS + 1.0)
                     prev_action = a
 
-        # ── Draw action points (with dynamic size based on zoom) ─────────
+        # -- Draw action points (with dynamic size based on zoom) ---------
         if self.show_action_points:
-            # Dynamic size: zoom in → bigger dots
+            # Dynamic size: zoom in -> bigger dots
             opacity = min(1.0, 20.0 / max(1.0, self._visible_secs))
             opacity = opacity * opacity  # easing
             if opacity >= 0.25:
@@ -831,7 +847,7 @@ class ScriptTimeline:
                         # Inner circle
                         col_inner = COL_ACTION if is_active else COL_INACTIVE_TRACK
                         dl.add_circle_filled(sc, point_size * 0.7, col_inner, 4)
-        # ── MaxSpeedHighlight — red overlay on very-fast segments ───────────────
+        # -- MaxSpeedHighlight  --  red overlay on very-fast segments ---------------
         if self.show_max_speed_highlight and is_active:
             ms_col = _col32(*self.max_speed_color)
             for a1, a2 in zip(list(line_actions), list(line_actions)[1:]):
@@ -844,10 +860,10 @@ class ScriptTimeline:
                     x2m = self._time_to_x(a2.at / 1000.0, x, w, t_start, t_end)
                     dl.add_rect_filled(
                         ImVec2(x1m, y), ImVec2(x2m, y + h), ms_col)
-        # ── Pop clip rect before drawing border ───────────────────────────
+        # -- Pop clip rect before drawing border ---------------------------
         dl.pop_clip_rect()
 
-        # ── Per-track border (OFS: green=active, slider-grab=has-sel, white=default)
+        # -- Per-track border (OFS: green=active, slider-grab=has-sel, white=default)
         if is_active:
             border_col = _col32(*self._ui_colors.track_border_active) if self._ui_colors else _col32(0, 180/255, 0, 1.0)
         elif script.HasSelection():
@@ -860,9 +876,9 @@ class ScriptTimeline:
             border_col, 0.0, 0, 1.0,
         )
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Interaction handling
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _handle_interaction(
         self,
@@ -881,7 +897,7 @@ class ScriptTimeline:
 
         active_script = scripts[active_idx] if 0 <= active_idx < len(scripts) else None
 
-        # ── Scroll wheel → zoom (OFS: mouseScroll, scrollPercent=0.10) ────────
+        # -- Scroll wheel -> zoom (OFS: mouseScroll, scrollPercent=0.10) --------
         if is_item_hovered and io.mouse_wheel != 0.0:
             factor = 1.0 + 0.10 * (-io.mouse_wheel)
             self._prev_visible_secs   = self._visible_secs
@@ -889,7 +905,7 @@ class ScriptTimeline:
                 0.5, min(300.0, self._target_visible_secs * factor))
             self._zoom_time = _time.monotonic()
 
-        # ── Playhead scrub: click/drag on the top triangle ruler zone ─────────
+        # -- Playhead scrub: click/drag on the top triangle ruler zone ---------
         RULER_H = imgui.get_font_size() * 1.5
         in_ruler = (win_pos.y <= mouse.y <= win_pos.y + RULER_H)
 
@@ -913,7 +929,7 @@ class ScriptTimeline:
                 if not self._scrub_was_paused:
                     player.SetPaused(False)
 
-        # ── Mouse cursor: Hand when hovering over an action dot ────────────────
+        # -- Mouse cursor: Hand when hovering over an action dot ----------------
         if is_item_hovered and not self._is_selecting and self._drag_action_ref is None and not self._scrubbing:
             hit_cur, _, _ = self._find_action_at_mouse(
                 mouse, win_pos, avail, scripts, active_idx, draw_map, t_start, t_end
@@ -921,7 +937,7 @@ class ScriptTimeline:
             if hit_cur is not None:
                 imgui.set_mouse_cursor(imgui.MouseCursor_.hand)
 
-        # ── Middle drag → pan timeline (non-follow) ────────────────────────────
+        # -- Middle drag -> pan timeline (non-follow) ----------------------------
         if is_item_active and imgui.is_mouse_dragging(2, 1.0):
             secs_per_px = (t_end - t_start) / avail.x if avail.x > 0 else 0
             self._scroll_offset = max(
@@ -929,17 +945,17 @@ class ScriptTimeline:
             )
             self.follow_cursor = False
 
-        # ── Middle double-click → clear active script selection ────────────────
+        # -- Middle double-click -> clear active script selection ----------------
         if is_item_hovered and imgui.is_mouse_double_clicked(2) and active_script:
             active_script.ClearSelection()
 
-        # ── Store right-clicked track for context menu ─────────────────────────
+        # -- Store right-clicked track for context menu -------------------------
         if imgui.is_mouse_clicked(1) and is_item_hovered:
             self._ctx_track_idx = (
                 hovered_script_idx if hovered_script_idx >= 0 else active_idx
             )
 
-        # ── Selection auto-scroll (OFS: handleSelectionScrolling, margin=3%) ───
+        # -- Selection auto-scroll (OFS: handleSelectionScrolling, margin=3%) ---
         if self._is_selecting:
             margin      = 0.03
             scroll_spd  = 80.0
@@ -957,7 +973,7 @@ class ScriptTimeline:
                     if player.IsPaused():
                         player.Update(0.0)
 
-        # ── Finalise selection on mouse release (OFS: IsMouseReleased check) ───
+        # -- Finalise selection on mouse release (OFS: IsMouseReleased check) ---
         if self._is_selecting and imgui.is_mouse_released(0):
             self._is_selecting = False
             if active_script:
@@ -972,7 +988,7 @@ class ScriptTimeline:
                         active_script.ClearSelection()
                     active_script.SelectTime(start_t, end_t)
 
-        # ── Clean up drag state when button released ───────────────────────────
+        # -- Clean up drag state when button released ---------------------------
         if not is_item_active and not self._is_selecting:
             self._drag_action_ref = None
             self._drag_started    = False
@@ -981,33 +997,33 @@ class ScriptTimeline:
         if not is_item_active:
             return
 
-        # ── Per-frame helpers ──────────────────────────────────────────────────
+        # -- Per-frame helpers --------------------------------------------------
         click_time   = self._x_to_time(mouse.x, win_pos.x, avail.x, t_start, t_end)
         click_time   = max(0.0, min(duration, click_time))
         # Modifier: Shift = add/move action (mirrors OFS ImGuiMod_Shift)
         shift_held   = io.key_shift
 
-        # ── handleTimelineClicks (mirrors OFS exactly) ─────────────────────────
-        # Skip if scrubbing — playhead drag already consumed the click
+        # -- handleTimelineClicks (mirrors OFS exactly) -------------------------
+        # Skip if scrubbing  --  playhead drag already consumed the click
         if self._scrubbing:
             return
 
         if imgui.is_mouse_clicked(0):
-            # Priority 1: action hit-test — OFS only checks the active script
+            # Priority 1: action hit-test  --  OFS only checks the active script
             hit_action, hit_script, hit_idx = self._find_action_at_mouse(
                 mouse, win_pos, avail, scripts, active_idx, draw_map, t_start, t_end
             )
 
             if shift_held:
                 if hit_action is not None:
-                    # Shift+click on dot → begin drag
+                    # Shift+click on dot -> begin drag
                     hit_script.ClearSelection()
                     hit_script.SelectAction(hit_action)
                     self._drag_action_ref = hit_action
                     self._drag_script_idx = hit_idx
                     self._drag_started    = False
                 else:
-                    # Shift+click on empty → create action at cursor
+                    # Shift+click on empty -> create action at cursor
                     ty      = self._get_track_y(scripts, draw_map, active_idx, win_pos.y)
                     pos     = self._y_to_pos(mouse.y, ty, self._track_h)
                     new_act = FunscriptAction(int(click_time * 1000),
@@ -1017,25 +1033,25 @@ class ScriptTimeline:
                                     action=new_act, script=active_script)
 
             elif hit_action is not None:
-                # Plain click on action dot → seek / select
+                # Plain click on action dot -> seek / select
                 EV.dispatch(OFS_Events.ACTION_CLICKED,
                             action=hit_action, script=hit_script)
                 self._drag_action_ref = None
 
             elif imgui.is_mouse_double_clicked(0):
-                # Double-click on empty → seek (OFS priority 3)
+                # Double-click on empty -> seek (OFS priority 3)
                 if player.VideoLoaded():
                     player.SetPositionExact(click_time)
                     if player.IsPaused():
                         player.Update(0.0)
 
             elif hovered_script_idx >= 0 and hovered_script_idx != active_idx:
-                # Click on a different track → switch active (OFS priority 5)
+                # Click on a different track -> switch active (OFS priority 5)
                 EV.dispatch(OFS_Events.CHANGE_ACTIVE_SCRIPT,
                             idx=hovered_script_idx)
 
             else:
-                # Plain left click on empty space of active track → begin selection
+                # Plain left click on empty space of active track -> begin selection
                 rel1               = ((mouse.x - win_pos.x) / avail.x
                                       if avail.x > 0 else 0.0)
                 self._abs_sel1     = t_start + (t_end - t_start) * rel1
@@ -1043,7 +1059,7 @@ class ScriptTimeline:
                 self._is_selecting = True
                 self._drag_action_ref = None
 
-        # ── Drag on action dot → move ──────────────────────────────────────────
+        # -- Drag on action dot -> move ------------------------------------------
         if self._drag_action_ref is not None and imgui.is_mouse_dragging(0, 4.0):
             drag_script = (
                 scripts[self._drag_script_idx]
@@ -1064,15 +1080,15 @@ class ScriptTimeline:
                                 action=moved, script=drag_script, move_started=False)
             return  # don't start selection while dragging dot
 
-        # ── Update selection rel_sel2 during drag (OFS: handleTimelineHover) ───
+        # -- Update selection rel_sel2 during drag (OFS: handleTimelineHover) ---
         if self._is_selecting and imgui.is_mouse_dragging(0, 0.0):
             self._rel_sel2 = max(0.0, min(1.0,
                 (mouse.x - win_pos.x) / avail.x if avail.x > 0 else 0.0
             ))
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Track geometry helpers
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _get_track_y(
         self,
@@ -1087,9 +1103,9 @@ class ScriptTimeline:
                 return win_top + draw_slot * self._track_h
         return win_top
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Action hit-testing
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _find_action_at_mouse(
         self,
@@ -1140,9 +1156,9 @@ class ScriptTimeline:
                 best      = (a, script, active_idx)
         return best
 
-    # ══════════════════════════════════════════════════════════════════════
+    # ======================================================================
     # DAW-mode rendering
-    # ══════════════════════════════════════════════════════════════════════
+    # ======================================================================
 
     def _show_daw(
         self,
@@ -1170,7 +1186,7 @@ class ScriptTimeline:
         self._win_pos  = win_pos
         self._win_size = avail
 
-        # ── Layout dimensions ──────────────────────────────────────────────
+        # -- Layout dimensions ----------------------------------------------
         # Animated label column width (description pane toggle)
         target_lw = DAW_LABEL_W if self.show_labels else 0.0
         dt_anim = io.delta_time if hasattr(io, 'delta_time') else 1.0 / 60.0
@@ -1185,7 +1201,7 @@ class ScriptTimeline:
         body_y   = win_pos.y + ruler_h
         body_h   = max(1.0, avail.y - ruler_h)
 
-        # ── Animate layer heights (lane minimize/maximize) ────────────────
+        # -- Animate layer heights (lane minimize/maximize) ----------------
         n_layers = max(1, len(tl.layers))
         for layer in tl.layers:
             target_h = self._MIN_LAYER_H if layer.minimized else max(DAW_MIN_LAYER_H, body_h / n_layers)
@@ -1199,7 +1215,7 @@ class ScriptTimeline:
         self._daw_v_scroll = max(0.0, min(self._daw_v_scroll, max_v_scroll))
         v_off = self._daw_v_scroll
 
-        # ── Smart follow-cursor logic ──────────────────────────────────────
+        # -- Smart follow-cursor logic --------------------------------------
         # Re-snap: when the playhead drifts back past mid-screen while
         # playing, automatically re-enable follow mode.
         if not self.follow_cursor and tp.is_playing:
@@ -1209,11 +1225,11 @@ class ScriptTimeline:
             if view_start <= cur_t <= view_end and cur_t >= mid_t:
                 self.follow_cursor = True
 
-        # ── Compute visible time range ─────────────────────────────────────
+        # -- Compute visible time range -------------------------------------
         if self.follow_cursor:
             half = self._visible_secs * 0.5
             if cur_t < half:
-                # Cursor hasn't reached mid-screen yet → snap view to 0
+                # Cursor hasn't reached mid-screen yet -> snap view to 0
                 t_start = 0.0
                 t_end   = self._visible_secs
             else:
@@ -1226,31 +1242,31 @@ class ScriptTimeline:
             t_start = self._scroll_offset
             t_end   = self._scroll_offset + self._visible_secs
 
-        # ── Background ─────────────────────────────────────────────────────
+        # -- Background -----------------------------------------------------
         dl.add_rect_filled(
             win_pos,
             ImVec2(win_pos.x + avail.x, win_pos.y + avail.y),
             COL_DAW_BG,
         )
 
-        # ── Label column header (top-left corner) ──────────────────────────
+        # -- Label column header (top-left corner) --------------------------
         if label_w > 0:
             dl.add_rect_filled(
                 ImVec2(win_pos.x, win_pos.y),
                 ImVec2(win_pos.x + label_w, win_pos.y + ruler_h),
                 COL_DAW_LABEL_BG)
 
-        # ── Ruler (top time bar) ───────────────────────────────────────────
+        # -- Ruler (top time bar) -------------------------------------------
         self._draw_daw_ruler(dl, body_x, win_pos.y, body_w, ruler_h, t_start, t_end)
 
-        # ── Clip drawing to body area (layers can overflow with v-scroll) ──
+        # -- Clip drawing to body area (layers can overflow with v-scroll) --
         dl.push_clip_rect(
             ImVec2(win_pos.x, body_y),
             ImVec2(win_pos.x + avail.x, body_y + body_h),
             True,
         )
 
-        # ── Layer rows + tracks ────────────────────────────────────────────
+        # -- Layer rows + tracks --------------------------------------------
         cum_y = 0.0   # cumulative Y offset for animated layer heights
         self._layer_y_offsets = []  # cache for interaction handler
         for layer_slot, layer in enumerate(tl.layers):
@@ -1272,7 +1288,7 @@ class ScriptTimeline:
                 ImVec2(body_x + body_w, ly + layer_h),
                 COL_DAW_LAYER_BORDER, 1.0)
 
-            # ── Draw each track (clip rectangle + content) ─────────────────
+            # -- Draw each track (clip rectangle + content) -----------------
             if not layer.minimized:
                 for trk in layer.tracks:
                     self._draw_daw_clip(
@@ -1295,7 +1311,7 @@ class ScriptTimeline:
                             ImVec2(cx1c, ly + 2), ImVec2(cx2c, ly + layer_h - 2),
                             _col32(r, g, b, a * 0.7), 2.0)
 
-            # ── Muted overlay ──────────────────────────────────────────────
+            # -- Muted overlay ----------------------------------------------
             if layer.muted:
                 dl.add_rect_filled(
                     ImVec2(body_x, ly),
@@ -1303,7 +1319,7 @@ class ScriptTimeline:
                     COL_DAW_MUTED_OVERLAY,
                 )
 
-            # ── Locked overlay ─────────────────────────────────────────────
+            # -- Locked overlay ---------------------------------------------
             if layer.locked:
                 dl.add_rect_filled(
                     ImVec2(body_x, ly),
@@ -1315,7 +1331,7 @@ class ScriptTimeline:
 
         dl.pop_clip_rect()
 
-        # ── Layer label column (drawn AFTER body clip-rect so it's on top) ─
+        # -- Layer label column (drawn AFTER body clip-rect so it's on top) -
         if label_w > 1:
             dl.push_clip_rect(
                 ImVec2(win_pos.x, body_y),
@@ -1332,7 +1348,7 @@ class ScriptTimeline:
                 self._draw_daw_layer_label(dl, layer, win_pos.x, ly, label_w, lh, layer_slot)
             dl.pop_clip_rect()
 
-        # ── Playhead / cursor ──────────────────────────────────────────────
+        # -- Playhead / cursor ----------------------------------------------
         cx = self._time_to_x(cur_t, body_x, body_w, t_start, t_end)
         if body_x <= cx <= body_x + body_w:
             dl.add_line(
@@ -1346,7 +1362,7 @@ class ScriptTimeline:
                 ImVec2(cx, win_pos.y + tri_sz * 1.2),
                 COL_DAW_CURSOR)
 
-        # ── "X.XX seconds" zoom indicator ─────────────────────────────────
+        # -- "X.XX seconds" zoom indicator ---------------------------------
         label = f"{self._visible_secs:.2f}s"
         txt_sz = imgui.calc_text_size(label)
         dl.add_text(
@@ -1355,7 +1371,7 @@ class ScriptTimeline:
             label,
         )
 
-        # ── V-scroll indicator (small bar on the right edge) ──────────────
+        # -- V-scroll indicator (small bar on the right edge) --------------
         if max_v_scroll > 0:
             sb_h = max(10.0, body_h * (body_h / total_layers_h))
             sb_y = body_y + (v_off / max_v_scroll) * (body_h - sb_h)
@@ -1365,12 +1381,12 @@ class ScriptTimeline:
                 _col32(1.0, 1.0, 1.0, 0.25) if not self._ui_colors else self._col_daw_scrollbar, 2.0,
             )
 
-        # ── Description pane toggle button (top-left corner) ──────────────
+        # -- Description pane toggle button (top-left corner) --------------
         toggle_sz = ImVec2(14, 14)
         toggle_x = win_pos.x + 2
         toggle_y = win_pos.y + (ruler_h - toggle_sz.y) * 0.5
         imgui.set_cursor_screen_pos(ImVec2(toggle_x, toggle_y))
-        toggle_icon = "\u25c0" if self.show_labels else "\u25b6"  # ◀ / ▶
+        toggle_icon = "<" if self.show_labels else ">"  # label toggle
         imgui.push_style_color(imgui.Col_.button, _col32(0.25, 0.25, 0.25, 0.8))
         imgui.push_style_color(imgui.Col_.button_hovered, _col32(0.4, 0.4, 0.4, 0.9))
         imgui.push_style_color(imgui.Col_.button_active, _col32(0.3, 0.3, 0.3, 1.0))
@@ -1380,7 +1396,7 @@ class ScriptTimeline:
         if imgui.is_item_hovered():
             imgui.set_tooltip("Toggle layer labels  [Tab]")
 
-        # ── Invisible interaction button ───────────────────────────────────
+        # -- Invisible interaction button -----------------------------------
         imgui.set_cursor_screen_pos(win_pos)
         imgui.invisible_button(
             "##daw_timeline", avail,
@@ -1394,7 +1410,7 @@ class ScriptTimeline:
             ruler_h, 0.0, t_start, t_end,
         )
 
-        # ── Right-click context menu ───────────────────────────────────────
+        # -- Right-click context menu ---------------------------------------
         if imgui.begin_popup_context_item("##daw_ctx"):
             _, self.follow_cursor = imgui.menu_item(
                 "Follow playback cursor", "", self.follow_cursor)
@@ -1404,12 +1420,17 @@ class ScriptTimeline:
                 "Show layer labels", "", self.show_labels)
             imgui.separator()
 
-            # ── Add track submenu ──────────────────────────────────────────
+            # -- Add track submenu ------------------------------------------
             if imgui.begin_menu("Add track"):
                 from src.ui.app_state import FUNSCRIPT_AXIS_NAMES
                 for axis in FUNSCRIPT_AXIS_NAMES:
                     if imgui.menu_item(axis, "", False)[0]:
                         EV.dispatch(OFS_Events.TIMELINE_ADD_AXIS_REQUEST, axis=axis)
+                imgui.separator()
+                if imgui.menu_item("Control Cues", "", False)[0]:
+                    if timeline_mgr:
+                        timeline_mgr.AddControlCueTrack()
+                        EV.dispatch(OFS_Events.TIMELINE_LAYOUT_CHANGED)
                 imgui.end_menu()
 
             if imgui.begin_menu("Layers"):
@@ -1467,7 +1488,7 @@ class ScriptTimeline:
                         imgui.end_menu()
                 imgui.end_menu()
 
-            # ── Rename layer popup ─────────────────────────────────────────
+            # -- Rename layer popup -----------------------------------------
             if imgui.begin_popup("##rename_layer_popup"):
                 imgui.text("Rename layer:")
                 imgui.set_next_item_width(160)
@@ -1506,11 +1527,27 @@ class ScriptTimeline:
                 _, self.show_max_speed_highlight = imgui.menu_item(
                     "Highlight max speed", "", self.show_max_speed_highlight)
                 imgui.end_menu()
+
+            # -- Control cue actions ----------------------------------------
+            if imgui.begin_menu("Control Cues"):
+                # Add cue at playhead position
+                if imgui.menu_item("Add cue at playhead", "", False)[0]:
+                    self._add_cue_at_playhead(timeline_mgr)
+                # Paste cue
+                can_paste = self._cue_clipboard is not None
+                if imgui.menu_item("Paste cue at playhead", "", False,
+                                   can_paste)[0]:
+                    self._paste_cue_at_playhead(timeline_mgr)
+                imgui.end_menu()
+
             imgui.end_popup()
 
-    # ──────────────────────────────────────────────────────────────────────
+        # -- Control cue edit popup -----------------------------------------
+        self._draw_cue_edit_popup(timeline_mgr)
+
+    # ----------------------------------------------------------------------
     # DAW: Ruler (time scale)
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _draw_daw_ruler(
         self, dl, x: float, y: float, w: float, h: float,
@@ -1550,9 +1587,9 @@ class ScriptTimeline:
                     dl.add_text(ImVec2(tx + 2, y + 2), COL_DAW_RULER_TEXT, lbl)
             t += interval
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # DAW: Layer label column
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _draw_daw_layer_label(
         self, dl, layer: "Layer",
@@ -1579,12 +1616,12 @@ class ScriptTimeline:
         else:
             dl.add_text(ImVec2(x + 4, y + 3), text_col, name)
 
-        # ── Minimize/maximize button ───────────────────────────────────────
+        # -- Minimize/maximize button ---------------------------------------
         min_btn_sz = ImVec2(14, 14)
         min_btn_x = x + w - min_btn_sz.x - 3
         min_btn_y = y + 2
         imgui.set_cursor_screen_pos(ImVec2(min_btn_x, min_btn_y))
-        min_icon = "\u25b2" if not layer.minimized else "\u25bc"  # ▲ / ▼
+        min_icon = "^" if not layer.minimized else "v"  # minimize toggle
         imgui.push_style_color(imgui.Col_.button, _col32(0.2, 0.2, 0.2, 0.6))
         imgui.push_style_color(imgui.Col_.button_hovered, _col32(0.4, 0.4, 0.4, 0.8))
         imgui.push_style_color(imgui.Col_.button_active, _col32(0.3, 0.3, 0.3, 1.0))
@@ -1599,7 +1636,7 @@ class ScriptTimeline:
         if layer.minimized:
             return  # don't show M/L buttons when minimized
 
-        # ── Interactive buttons (Mute / Lock) — drawn via imgui widgets ────
+        # -- Interactive buttons (Mute / Lock)  --  drawn via imgui widgets ----
         btn_y = y + h - 22.0
         btn_sz = ImVec2(18, 18)
         imgui.set_cursor_screen_pos(ImVec2(x + 3, btn_y))
@@ -1633,9 +1670,9 @@ class ScriptTimeline:
             EV.dispatch(OFS_Events.TIMELINE_LAYOUT_CHANGED)
         imgui.pop_style_color(4)
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # DAW: Clip rectangle for a track
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _draw_daw_clip(
         self, dl,
@@ -1669,31 +1706,31 @@ class ScriptTimeline:
         inner_y = clip_y1 + PAD_TOP
         inner_h = max(1.0, clip_y2 - inner_y)
 
-        # ── Clip background (track colour) ─────────────────────────────────
+        # -- Clip background (track colour) ---------------------------------
         r, g, b, a = trk.color[:4]
         clip_col = _col32(r, g, b, a * 0.55)
         dl.add_rect_filled(ImVec2(cx1_clamp, clip_y1), ImVec2(cx2_clamp, clip_y2), clip_col, 3.0)
 
-        # ── Clip border ─────────────────────────────────────────────────────
+        # -- Clip border -----------------------------------------------------
         is_selected = (trk.id == self._selected_track_id)
         border_col = _col32(1.0, 1.0, 1.0, 0.90) if is_selected else COL_DAW_CLIP_BORDER
         border_thick = 2.0 if is_selected else 1.0
         dl.add_rect(ImVec2(cx1_clamp, clip_y1), ImVec2(cx2_clamp, clip_y2),
                     border_col, 3.0, 0, border_thick)
 
-        # ── Clip title ──────────────────────────────────────────────────────
+        # -- Clip title ------------------------------------------------------
         clip_name = trk.name[:20]
         dl.push_clip_rect(ImVec2(cx1_clamp, clip_y1), ImVec2(cx2_clamp, clip_y2), True)
         dl.add_text(ImVec2(cx1_clamp + 4, clip_y1 + 1),
                     _col32(1.0, 1.0, 1.0, 0.85), clip_name)
 
-        # ── Content rendering (per track type) ─────────────────────────────
+        # -- Content rendering (per track type) -----------------------------
         if trk.track_type == TrackType.VIDEO:
-            # ── Video clip label ───────────────────────────────────────────
-            trim_label = f"VIDEO  [{_fmt_time(trk.trim_in)} → {_fmt_time(trk.trim_out)}]"
+            # -- Video clip label -------------------------------------------
+            trim_label = f"VIDEO  [{_fmt_time(trk.trim_in)} -> {_fmt_time(trk.trim_out)}]"
             dl.add_text(ImVec2(cx1_clamp + 4, inner_y + 2),
                         _col32(0.7, 0.7, 0.7, 0.6), trim_label)
-            # ── Waveform overlay (trim-aware) ──────────────────────────────
+            # -- Waveform overlay (trim-aware) ------------------------------
             if self.show_waveform and self.waveform is not None and self.waveform.ready:
                 _WV_H_SCALE = 0.5
                 wv_col = _col32(*self.waveform_color)
@@ -1726,7 +1763,7 @@ class ScriptTimeline:
                 script = scripts[fs_idx]
                 is_active = (fs_idx == active_idx)
                 # Draw funscript actions inside the clip using the inner area.
-                # Pass body_x / body_w so the time→pixel mapping is correct
+                # Pass body_x / body_w so the time->pixel mapping is correct
                 # even when the clip doesn't span the full visible range.
                 self._draw_daw_funscript_content(
                     dl, script, trk, is_active,
@@ -1746,11 +1783,41 @@ class ScriptTimeline:
                         ImVec2(ex, inner_y + inner_h),
                         _col32(1.0, 0.8, 0.2, 0.9) if not self._ui_colors else self._col_daw_trigger, 2.0)
 
+        elif trk.track_type == TrackType.CONTROL_CUE and trk.control_cue_data is not None:
+            # Draw control cues as coloured flag markers
+            from src.core.control_cue import CUE_TYPE_COLORS, CueType
+            for cue in trk.control_cue_data.cues:
+                global_t = trk.LocalToGlobal(cue.time)
+                cx = body_x + (global_t - t_start) / visible * body_w
+                if cx1_clamp - 6 <= cx <= cx2_clamp + 6:
+                    cr, cg, cb, ca = cue.color[:4]
+                    cue_col = _col32(cr, cg, cb, ca)
+                    # Vertical line (full height)
+                    dl.add_line(ImVec2(cx, inner_y), ImVec2(cx, inner_y + inner_h),
+                                cue_col, 2.0)
+                    # Flag / tab at top (small filled rect)
+                    flag_w = min(60.0, max(20.0, len(cue.name) * 6.0 + 8))
+                    flag_h = 14.0
+                    dl.add_rect_filled(
+                        ImVec2(cx, inner_y),
+                        ImVec2(cx + flag_w, inner_y + flag_h),
+                        cue_col, 2.0)
+                    # Cue name on the flag
+                    label = cue.name[:10]
+                    dl.add_text(ImVec2(cx + 3, inner_y + 1),
+                                _col32(0.0, 0.0, 0.0, 1.0), label)
+                    # Highlight if selected for editing
+                    if cue.cue_id == self._cue_edit_id:
+                        dl.add_rect(
+                            ImVec2(cx - 1, inner_y - 1),
+                            ImVec2(cx + flag_w + 1, inner_y + flag_h + 1),
+                            _col32(1.0, 1.0, 1.0, 0.9), 2.0, 0, 2.0)
+
         dl.pop_clip_rect()
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # DAW: Funscript content inside a clip rectangle
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _draw_daw_funscript_content(
         self, dl,
@@ -1765,7 +1832,7 @@ class ScriptTimeline:
 
         Parameters *x, y, w, h* define the clip's inner pixel area (used for
         vertical mapping and drawing bounds).  *body_x / body_w* define the
-        full timeline body area (used for time → pixel mapping so positions
+        full timeline body area (used for time -> pixel mapping so positions
         stay correct even when the clip doesn't span the full visible range).
         """
         if w < 2 or h < 2:
@@ -1782,11 +1849,11 @@ class ScriptTimeline:
             return
 
         def _global_to_px(g: float) -> float:
-            """Global time → pixel x (using full body mapping)."""
+            """Global time -> pixel x (using full body mapping)."""
             return body_x + (g - t_start) / visible * body_w
 
         def _local_ms_to_px(ms: int) -> float:
-            """Track-local milliseconds → pixel x."""
+            """Track-local milliseconds -> pixel x."""
             return _global_to_px(offset + ms / 1000.0)
 
         def _pos_to_py(pos: int) -> float:
@@ -1805,16 +1872,16 @@ class ScriptTimeline:
             + ([next_edge] if next_edge is not None else [])
         )
 
-        # ── Height guide lines (0 %, 25 %, 50 %, 75 %, 100 %) ────────────
+        # -- Height guide lines (0 %, 25 %, 50 %, 75 %, 100 %) ------------
         self._draw_height_lines(dl, x, y, w, h)
 
-        # ── DAW vertical grid lines (time subdivisions) ───────────────────
+        # -- DAW vertical grid lines (time subdivisions) -------------------
         if self._ui_colors:
             gl = self._col_daw_grid_line
             if gl[3] > 0.01:
                 visible_time = t_end - t_start
                 if visible_time > 0:
-                    # Auto-pick a sensible interval (1s, 0.5s, 0.25s, 0.1s…)
+                    # Auto-pick a sensible interval (1s, 0.5s, 0.25s, 0.1s...)
                     TARGET_LINES = 10
                     raw_interval = visible_time / TARGET_LINES
                     nice_steps = [5.0, 2.0, 1.0, 0.5, 0.25, 0.1, 0.05, 0.025, 0.01]
@@ -1829,7 +1896,7 @@ class ScriptTimeline:
                             dl.add_line(ImVec2(gx, y), ImVec2(gx, y + h), grid_col, 1.0)
                         t += interval
 
-        # ── Overlay grid (Frame / Tempo) ──────────────────────────────────
+        # -- Overlay grid (Frame / Tempo) ----------------------------------
         # Convert visible range to track-local times for the grid methods
         local_t_start = max(0.0, t_start - offset)
         local_t_end   = t_end - offset
@@ -1849,7 +1916,7 @@ class ScriptTimeline:
                 self.overlay_bpm, self.overlay_tempo_offset_s,
                 self.overlay_tempo_measure_idx)
 
-        # ── Max-speed highlight — red overlay on very-fast segments ───────
+        # -- Max-speed highlight  --  red overlay on very-fast segments -------
         if self.show_max_speed_highlight and is_active:
             ms_col = _col32(*self.max_speed_color)
             for a1, a2 in zip(list(line_actions), list(line_actions)[1:]):
@@ -1863,7 +1930,7 @@ class ScriptTimeline:
                     dl.add_rect_filled(
                         ImVec2(x1m, y), ImVec2(x2m, y + h), ms_col)
 
-        # ── Connecting lines ──────────────────────────────────────────────
+        # -- Connecting lines ----------------------------------------------
         if self.show_action_lines and len(line_actions) > 1:
             prev_a = None
             for a in line_actions:
@@ -1881,7 +1948,7 @@ class ScriptTimeline:
                         dl.add_line(p1, p2, COL_LINE_SEL, 3.0)
                 prev_a = a
 
-        # ── Action dots ───────────────────────────────────────────────────
+        # -- Action dots ---------------------------------------------------
         if self.show_action_points:
             opacity = min(1.0, 20.0 / max(1.0, self._visible_secs))
             opacity = opacity * opacity
@@ -1900,9 +1967,9 @@ class ScriptTimeline:
                         inner_col = COL_ACTION if is_active else COL_INACTIVE_TRACK
                         dl.add_circle_filled(ImVec2(ax, ay), ps * 0.7, inner_col, 4)
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # DAW: Interaction handling
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _handle_daw_interaction(
         self,
@@ -1928,37 +1995,37 @@ class ScriptTimeline:
         if visible <= 0:
             visible = 1.0
 
-        # ── Scroll wheel ──────────────────────────────────────────────────
+        # -- Scroll wheel --------------------------------------------------
         if is_item_hovered and io.mouse_wheel != 0.0:
             if io.key_ctrl or io.key_super:
-                # Ctrl+scroll (Cmd on macOS) → zoom
+                # Ctrl+scroll (Cmd on macOS) -> zoom
                 factor = 1.0 + 0.10 * (-io.mouse_wheel)
                 self._prev_visible_secs   = self._visible_secs
                 self._target_visible_secs = max(
                     0.5, min(600.0, self._target_visible_secs * factor))
                 self._zoom_time = _time.monotonic()
             elif io.key_shift:
-                # Shift+scroll → horizontal pan
+                # Shift+scroll -> horizontal pan
                 secs_per_px = visible / body_w if body_w > 0 else 0
                 pan_px = io.mouse_wheel * 60.0  # ~60 px per notch
                 self._scroll_offset = max(
                     0.0, self._scroll_offset - pan_px * secs_per_px)
                 self.follow_cursor = False
             else:
-                # Plain scroll → vertical scroll of layers
+                # Plain scroll -> vertical scroll of layers
                 total_lh = sum(l._anim_height for l in tl.layers) if tl.layers else body_h
                 max_vs = max(0.0, total_lh - body_h)
                 self._daw_v_scroll = max(
                     0.0, min(max_vs, self._daw_v_scroll - io.mouse_wheel * 40.0))
 
-        # ── Middle drag → pan (alternative) ───────────────────────────────
+        # -- Middle drag -> pan (alternative) -------------------------------
         if is_item_active and imgui.is_mouse_dragging(2, 1.0):
             secs_per_px = visible / body_w if body_w > 0 else 0
             self._scroll_offset = max(
                 0.0, self._scroll_offset - io.mouse_delta.x * secs_per_px)
             self.follow_cursor = False
 
-        # ── Ruler click / Playhead drag → seek transport ───────────────────
+        # -- Ruler click / Playhead drag -> seek transport -------------------
         in_ruler = (win_pos.y <= mouse.y <= win_pos.y + ruler_h)
         in_label_col = (mouse.x < body_x)
 
@@ -2001,11 +2068,11 @@ class ScriptTimeline:
         if self._scrubbing:
             return  # don't process other clicks while scrubbing
 
-        # ── Tab key → toggle label column ─────────────────────────────────
+        # -- Tab key -> toggle label column ---------------------------------
         if is_item_hovered and imgui.is_key_pressed(imgui.Key.tab):
             self.show_labels = not self.show_labels
 
-        # ── Which layer is hovered? (using animated layer heights) ────────
+        # -- Which layer is hovered? (using animated layer heights) --------
         v_off = self._daw_v_scroll
         hovered_layer_idx = -1
         if is_item_hovered and mouse.y >= body_y:
@@ -2015,7 +2082,7 @@ class ScriptTimeline:
                     hovered_layer_idx = idx
                     break
 
-        # ── Track horizontal drag (continuation — left-click on a clip) ───
+        # -- Track horizontal drag (continuation  --  left-click on a clip) ---
         if self._daw_dragging_track_id is not None:
             if imgui.is_mouse_down(0):
                 imgui.set_mouse_cursor(imgui.MouseCursor_.hand)
@@ -2057,7 +2124,35 @@ class ScriptTimeline:
                 EV.dispatch(OFS_Events.TIMELINE_TRACK_MOVED)
             return  # absorb all left-click while dragging
 
-        # ── ESC → deselect all actions ────────────────────────────────────
+        # -- Control-cue drag (continuation) -------------------------------
+        if self._cue_dragging_id is not None:
+            if imgui.is_mouse_down(0):
+                imgui.set_mouse_cursor(imgui.MouseCursor_.resize_ew)
+                dx_px = mouse.x - self._cue_drag_start_mx
+                secs_per_px = visible / body_w if body_w > 0 else 0
+                new_time = self._cue_drag_start_time + dx_px * secs_per_px
+                new_time = max(0.0, new_time)
+                # Update cue time in-place
+                result = tl.FindTrack(self._cue_drag_track_id)
+                if result:
+                    _lay, trk = result
+                    if trk.control_cue_data:
+                        for cue in trk.control_cue_data.cues:
+                            if cue.cue_id == self._cue_dragging_id:
+                                cue.time = new_time
+                                break
+            else:
+                # Released  --  re-sort cues and clear drag state
+                result = tl.FindTrack(self._cue_drag_track_id)
+                if result:
+                    _lay, trk = result
+                    if trk.control_cue_data:
+                        trk.control_cue_data.cues.sort(key=lambda c: c.time)
+                self._cue_dragging_id = None
+                self._cue_drag_track_id = None
+            return  # absorb mouse while dragging cue
+
+        # -- ESC -> deselect all actions ------------------------------------
         if imgui.is_key_pressed(imgui.Key.escape):
             for s in scripts:
                 if s.HasSelection():
@@ -2066,7 +2161,7 @@ class ScriptTimeline:
             self._daw_fullsel = False
             self._daw_pending_click = False
 
-        # ── Shift+drag rectangular selection (continuation) ───────────────
+        # -- Shift+drag rectangular selection (continuation) ---------------
         if self._daw_selecting:
             dl = imgui.get_window_draw_list()
             # Draw selection rectangle
@@ -2078,7 +2173,7 @@ class ScriptTimeline:
             dl.add_rect(ImVec2(x0, y0), ImVec2(x1, y1), COL_SEL_RECT_BORDER)
 
             if not imgui.is_mouse_down(0):
-                # Released — perform selection
+                # Released  --  perform selection
                 if self._daw_sel_track_id and self._daw_sel_layer_idx >= 0:
                     result = tl.FindTrack(self._daw_sel_track_id)
                     if result:
@@ -2096,8 +2191,8 @@ class ScriptTimeline:
                                 _sel_ly, _sel_lh = self._layer_y_offsets[self._daw_sel_layer_idx] if self._daw_sel_layer_idx < len(self._layer_y_offsets) else (body_y, 80.0)
                                 ly = _sel_ly + 14.0
                                 lh = _sel_lh - 15.0
-                                pos0 = self._y_to_pos(y1, ly, lh)  # y1=bottom → lower pos
-                                pos1 = self._y_to_pos(y0, ly, lh)  # y0=top → higher pos
+                                pos0 = self._y_to_pos(y1, ly, lh)  # y1=bottom -> lower pos
+                                pos1 = self._y_to_pos(y0, ly, lh)  # y0=top -> higher pos
                                 pos0 = max(0, min(100, pos0))
                                 pos1 = max(0, min(100, pos1))
                                 script.SelectRect(
@@ -2106,7 +2201,7 @@ class ScriptTimeline:
                 self._daw_selecting = False
             return  # absorb mouse while selecting
 
-        # ── Click+drag full-height horizontal selection (continuation) ────
+        # -- Click+drag full-height horizontal selection (continuation) ----
         if self._daw_fullsel:
             dl = imgui.get_window_draw_list()
             x0 = min(self._daw_fullsel_start_mx, mouse.x)
@@ -2116,7 +2211,7 @@ class ScriptTimeline:
             dl.add_rect(ImVec2(x0, body_y), ImVec2(x1, body_y + body_h), COL_SEL_RECT_BORDER)
 
             if not imgui.is_mouse_down(0):
-                # Released — select actions across ALL funscript tracks
+                # Released  --  select actions across ALL funscript tracks
                 t0 = self._x_to_time(x0, body_x, body_w, t_start, t_end)
                 t1 = self._x_to_time(x1, body_x, body_w, t_start, t_end)
                 if abs(t1 - t0) > 0.008:  # 8 ms minimum
@@ -2138,25 +2233,25 @@ class ScriptTimeline:
                 self._daw_fullsel = False
             return  # absorb mouse while full-height selecting
 
-        # ── Pending click: detect drag vs single-click ────────────────────
+        # -- Pending click: detect drag vs single-click --------------------
         if self._daw_pending_click:
             dx = mouse.x - self._daw_pending_mx
             dy = mouse.y - self._daw_pending_my
             if abs(dx) > self._DAW_DRAG_THRESHOLD or abs(dy) > self._DAW_DRAG_THRESHOLD:
-                # Exceeded threshold → start full-height selection from
+                # Exceeded threshold -> start full-height selection from
                 # the original mouse-down position.
                 self._daw_fullsel = True
                 self._daw_fullsel_start_mx = self._daw_pending_mx
                 self._daw_pending_click = False
             elif not imgui.is_mouse_down(0):
-                # Released without dragging → single-click seek
+                # Released without dragging -> single-click seek
                 click_t = self._x_to_time(
                     self._daw_pending_mx, body_x, body_w, t_start, t_end)
                 tp.Seek(max(0.0, click_t))
                 self._daw_pending_click = False
             return  # absorb mouse while pending
 
-        # ── Hover cursor: hand when Option held over a clip, else normal ──
+        # -- Hover cursor: hand when Option held over a clip, else normal --
         # Scrubber snap-to-playhead (Omakase pattern #5): when hovering
         # within a few pixels of the playhead, show a resize cursor as a
         # visual hint that clicking will start playhead drag.
@@ -2170,103 +2265,156 @@ class ScriptTimeline:
                     if hover_clip is not None and io.key_alt:
                         imgui.set_mouse_cursor(imgui.MouseCursor_.hand)
 
-        # ── Left click ────────────────────────────────────────────────────
+        # -- Left click ----------------------------------------------------
         if imgui.is_mouse_clicked(0) and is_item_hovered and not in_ruler and not in_label_col:
             click_t = self._x_to_time(mouse.x, body_x, body_w, t_start, t_end)
 
-            # Hit-test: is a clip under the mouse?
-            hit_track = None
-            hit_layer = None
-            if 0 <= hovered_layer_idx < len(tl.layers):
-                layer = tl.layers[hovered_layer_idx]
-                hit_track_obj = layer.TrackAt(click_t)
-                if hit_track_obj is not None:
-                    hit_track = hit_track_obj
-                    hit_layer = layer
-
-            if hit_track is not None:
-                # Check if the layer is locked
-                _layer_locked = hit_layer.locked if hit_layer else False
-
-                # ── Select track for Track Info panel ──────────────────────
+            # -- Cue marker hit-test -> start drag --------------------------
+            cue_click = self._hit_test_cue(
+                tl, mouse.x, mouse.y, body_x, body_w, body_y, t_start, t_end)
+            if cue_click is not None:
+                cue_obj, cue_track_id = cue_click
+                self._cue_dragging_id = cue_obj.cue_id
+                self._cue_drag_track_id = cue_track_id
+                self._cue_drag_start_time = cue_obj.time
+                self._cue_drag_start_mx = mouse.x
                 EV.dispatch(OFS_Events.TIMELINE_TRACK_SELECTED,
-                            track_id=hit_track.id)
+                            track_id=cue_track_id)
+            else:
+                # No cue hit  --  fall through to clip interaction
 
-                # ── Activate the funscript if it's a different one ─────────
-                if hit_track.track_type == TrackType.FUNSCRIPT and hit_track.funscript_data:
-                    fs_idx = hit_track.funscript_data.funscript_idx
-                    if fs_idx != active_idx:
-                        EV.dispatch(OFS_Events.CHANGE_ACTIVE_SCRIPT, idx=fs_idx)
+                # Hit-test: is a clip under the mouse?
+                hit_track = None
+                hit_layer = None
+                if 0 <= hovered_layer_idx < len(tl.layers):
+                    layer = tl.layers[hovered_layer_idx]
+                    hit_track_obj = layer.TrackAt(click_t)
+                    if hit_track_obj is not None:
+                        hit_track = hit_track_obj
+                        hit_layer = layer
 
-                # ── Action dot hit-test (funscript clips only) ─────────────
-                hit_a = None
-                if hit_track.track_type == TrackType.FUNSCRIPT and hit_track.funscript_data:
-                    fs_idx = hit_track.funscript_data.funscript_idx
-                    if 0 <= fs_idx < len(scripts):
-                        script = scripts[fs_idx]
-                        _ht_ly, _ht_lh = self._layer_y_offsets[hovered_layer_idx] if hovered_layer_idx < len(self._layer_y_offsets) else (body_y, 80.0)
-                        hit_a = self._find_action_near(
-                            script, mouse, hit_track,
-                            body_x, _ht_ly + 14.0,
-                            body_w, _ht_lh - 15.0,
-                            t_start, t_end,
-                        )
+                if hit_track is not None:
+                    # Check if the layer is locked
+                    _layer_locked = hit_layer.locked if hit_layer else False
 
-                if hit_a is not None:
-                    # Click on action dot → select / seek
-                    EV.dispatch(OFS_Events.ACTION_CLICKED,
-                                action=hit_a, script=script)
-                elif io.key_shift and hit_track.track_type == TrackType.FUNSCRIPT and not _layer_locked:
-                    # Shift+click in funscript clip → start rectangular selection
-                    self._daw_selecting = True
-                    self._daw_sel_start_mx = mouse.x
-                    self._daw_sel_start_my = mouse.y
-                    self._daw_sel_track_id = hit_track.id
-                    self._daw_sel_layer_idx = hovered_layer_idx
-                elif io.key_alt and not _layer_locked:
-                    # Option+click on clip → start horizontal drag
-                    self._daw_dragging_track_id = hit_track.id
-                    self._daw_drag_start_offset = hit_track.offset
-                    self._daw_drag_start_mx     = mouse.x
-                elif io.key_ctrl and hit_track.track_type == TrackType.FUNSCRIPT and not _layer_locked:
-                    # Ctrl+click in clip → create action
-                    if hit_track.funscript_data:
+                    # -- Select track for Track Info panel ----------------------
+                    EV.dispatch(OFS_Events.TIMELINE_TRACK_SELECTED,
+                                track_id=hit_track.id)
+
+                    # -- Activate the funscript if it's a different one ---------
+                    if hit_track.track_type == TrackType.FUNSCRIPT and hit_track.funscript_data:
+                        fs_idx = hit_track.funscript_data.funscript_idx
+                        if fs_idx != active_idx:
+                            EV.dispatch(OFS_Events.CHANGE_ACTIVE_SCRIPT, idx=fs_idx)
+
+                    # -- Action dot hit-test (funscript clips only) -------------
+                    hit_a = None
+                    if hit_track.track_type == TrackType.FUNSCRIPT and hit_track.funscript_data:
                         fs_idx = hit_track.funscript_data.funscript_idx
                         if 0 <= fs_idx < len(scripts):
                             script = scripts[fs_idx]
-                            local_t = hit_track.GlobalToLocal(click_t)
-                            _ct_ly, _ct_lh = self._layer_y_offsets[hovered_layer_idx] if hovered_layer_idx < len(self._layer_y_offsets) else (body_y, 80.0)
-                            ty = _ct_ly + 14.0
-                            th = _ct_lh - 15.0
-                            pos = self._y_to_pos(mouse.y, ty, th)
-                            new_act = FunscriptAction(
-                                int(local_t * 1000), max(0, min(100, pos)))
-                            EV.dispatch(OFS_Events.ACTION_SHOULD_CREATE,
-                                        action=new_act, script=script)
+                            _ht_ly, _ht_lh = self._layer_y_offsets[hovered_layer_idx] if hovered_layer_idx < len(self._layer_y_offsets) else (body_y, 80.0)
+                            hit_a = self._find_action_near(
+                                script, mouse, hit_track,
+                                body_x, _ht_ly + 14.0,
+                                body_w, _ht_lh - 15.0,
+                                t_start, t_end,
+                            )
+
+                    if hit_a is not None:
+                        # Click on action dot -> select / seek
+                        EV.dispatch(OFS_Events.ACTION_CLICKED,
+                                    action=hit_a, script=script)
+                    elif io.key_shift and hit_track.track_type == TrackType.FUNSCRIPT and not _layer_locked:
+                        # Shift+click in funscript clip -> start rectangular selection
+                        self._daw_selecting = True
+                        self._daw_sel_start_mx = mouse.x
+                        self._daw_sel_start_my = mouse.y
+                        self._daw_sel_track_id = hit_track.id
+                        self._daw_sel_layer_idx = hovered_layer_idx
+                    elif io.key_alt and not _layer_locked:
+                        # Option+click on clip -> start horizontal drag
+                        self._daw_dragging_track_id = hit_track.id
+                        self._daw_drag_start_offset = hit_track.offset
+                        self._daw_drag_start_mx     = mouse.x
+                    elif io.key_ctrl and hit_track.track_type == TrackType.FUNSCRIPT and not _layer_locked:
+                        # Ctrl+click in clip -> create action
+                        if hit_track.funscript_data:
+                            fs_idx = hit_track.funscript_data.funscript_idx
+                            if 0 <= fs_idx < len(scripts):
+                                script = scripts[fs_idx]
+                                local_t = hit_track.GlobalToLocal(click_t)
+                                _ct_ly, _ct_lh = self._layer_y_offsets[hovered_layer_idx] if hovered_layer_idx < len(self._layer_y_offsets) else (body_y, 80.0)
+                                ty = _ct_ly + 14.0
+                                th = _ct_lh - 15.0
+                                pos = self._y_to_pos(mouse.y, ty, th)
+                                new_act = FunscriptAction(
+                                    int(local_t * 1000), max(0, min(100, pos)))
+                                EV.dispatch(OFS_Events.ACTION_SHOULD_CREATE,
+                                            action=new_act, script=script)
+                    else:
+                        # Plain click on clip body -> defer (may become drag-select)
+                        self._daw_pending_click = True
+                        self._daw_pending_mx = mouse.x
+                        self._daw_pending_my = mouse.y
                 else:
-                    # Plain click on clip body → defer (may become drag-select)
+                    # Click on empty -> deselect track, defer seek (may drag)
+                    EV.dispatch(OFS_Events.TIMELINE_TRACK_DESELECTED)
                     self._daw_pending_click = True
                     self._daw_pending_mx = mouse.x
                     self._daw_pending_my = mouse.y
-            else:
-                # Click on empty → deselect track, defer seek (may drag)
-                EV.dispatch(OFS_Events.TIMELINE_TRACK_DESELECTED)
-                self._daw_pending_click = True
-                self._daw_pending_mx = mouse.x
-                self._daw_pending_my = mouse.y
 
-        # ── Double-click → seek ───────────────────────────────────────────
+        # -- Double-click -> cue edit or seek ------------------------------
         if imgui.is_mouse_double_clicked(0) and is_item_hovered and not in_ruler and not in_label_col:
             click_t = self._x_to_time(mouse.x, body_x, body_w, t_start, t_end)
-            tp.Seek(max(0.0, click_t))
+            # Check if double-click is on a control cue flag
+            cue_hit = self._hit_test_cue(
+                tl, mouse.x, mouse.y, body_x, body_w, body_y, t_start, t_end)
+            if cue_hit is not None:
+                cue_obj, cue_track_id = cue_hit
+                self._open_cue_editor(cue_obj, cue_track_id)
+            else:
+                tp.Seek(max(0.0, click_t))
 
-        # ── Store right-clicked layer for context menu ─────────────────────
+        # -- Store right-clicked layer for context menu ---------------------
         if imgui.is_mouse_clicked(1) and is_item_hovered:
             self._ctx_track_idx = hovered_layer_idx
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
+    # DAW: Cue hit-test (flag + vertical line)
+    # ----------------------------------------------------------------------
+
+    def _hit_test_cue(
+        self,
+        tl,
+        mx: float, my: float,
+        body_x: float, body_w: float, body_y: float,
+        t_start: float, t_end: float,
+    ) -> Optional[tuple]:
+        """Return ``(ControlCue, track_id)`` if (mx, my) is near a cue flag, else None."""
+        from src.core.timeline import TrackType
+        visible = t_end - t_start
+        if visible <= 0 or body_w <= 0:
+            return None
+        HIT_R = 8.0   # pixel tolerance
+        for idx, (ly, lh) in enumerate(getattr(self, '_layer_y_offsets', [])):
+            if idx >= len(tl.layers):
+                break
+            layer = tl.layers[idx]
+            for trk in layer.tracks:
+                if trk.track_type != TrackType.CONTROL_CUE or not trk.control_cue_data:
+                    continue
+                for cue in trk.control_cue_data.cues:
+                    global_t = trk.LocalToGlobal(cue.time)
+                    cx = body_x + (global_t - t_start) / visible * body_w
+                    # Check X proximity and that Y is within the layer
+                    if abs(mx - cx) <= HIT_R and ly <= my <= ly + lh:
+                        return (cue, trk.id)
+        return None
+
+    # ----------------------------------------------------------------------
     # DAW: Action hit-test (within a clip)
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _find_action_near(
         self,
@@ -2304,9 +2452,9 @@ class ScriptTimeline:
                 best = a
         return best
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Coordinate helpers
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     @staticmethod
     def _time_to_x(
@@ -2328,7 +2476,7 @@ class ScriptTimeline:
 
     @staticmethod
     def _pos_to_y(pos: int, y_origin: float, height: float) -> float:
-        """pos 0..100 → y (0=bottom, 100=top)."""
+        """pos 0..100 -> y (0=bottom, 100=top)."""
         return y_origin + height - (pos / 100.0) * height
 
     @staticmethod
@@ -2337,3 +2485,199 @@ class ScriptTimeline:
         if height <= 0:
             return 50
         return int(max(0, min(100, (1.0 - (y - y_origin) / height) * 100)))
+
+    # ----------------------------------------------------------------------
+    # Control Cue helpers
+    # ----------------------------------------------------------------------
+
+    def _find_first_cue_track(
+        self, timeline_mgr: "TimelineManager"
+    ) -> Optional["Track"]:
+        """Return the first CONTROL_CUE track, or None."""
+        from src.core.timeline import TrackType
+        for _lay, trk in timeline_mgr.timeline.AllTracks():
+            if trk.track_type == TrackType.CONTROL_CUE and trk.control_cue_data is not None:
+                return trk
+        return None
+
+    def _add_cue_at_playhead(self, timeline_mgr: Optional["TimelineManager"]) -> None:
+        """Add a new default cue at the current playhead position."""
+        if not timeline_mgr:
+            return
+        from src.core.control_cue import ControlCue, CueType, CUE_TYPE_COLORS
+        trk = self._find_first_cue_track(timeline_mgr)
+        if trk is None:
+            # Auto-create a cue track
+            trk = timeline_mgr.AddControlCueTrack()
+            if trk is None:
+                return
+            EV.dispatch(OFS_Events.TIMELINE_LAYOUT_CHANGED)
+        pos = timeline_mgr.transport.position
+        local_t = trk.GlobalToLocal(pos)
+        cue = ControlCue(
+            name="Cue",
+            cue_type=CueType.PARAMETER,
+            time=local_t,
+            color=CUE_TYPE_COLORS[CueType.PARAMETER],
+        )
+        trk.control_cue_data.add_cue(cue)
+        # Open edit popup for this new cue
+        self._open_cue_editor(cue, trk.id)
+
+    def _paste_cue_at_playhead(self, timeline_mgr: Optional["TimelineManager"]) -> None:
+        """Paste the cue clipboard at the current playhead."""
+        if not timeline_mgr or self._cue_clipboard is None:
+            return
+        trk = self._find_first_cue_track(timeline_mgr)
+        if trk is None:
+            trk = timeline_mgr.AddControlCueTrack()
+            if trk is None:
+                return
+            EV.dispatch(OFS_Events.TIMELINE_LAYOUT_CHANGED)
+        pos = timeline_mgr.transport.position
+        local_t = trk.GlobalToLocal(pos)
+        new_cue = self._cue_clipboard.duplicate()
+        new_cue.time = local_t
+        trk.control_cue_data.add_cue(new_cue)
+
+    def _open_cue_editor(self, cue: "ControlCue", track_id: str) -> None:
+        """Populate edit fields from a cue and open the popup."""
+        import json
+        self._cue_edit_id = cue.cue_id
+        self._cue_edit_track_id = track_id
+        self._cue_edit_name = cue.name
+        self._cue_edit_type = int(cue.cue_type)
+        self._cue_edit_time = cue.time
+        self._cue_edit_color = list(cue.color[:4])
+        self._cue_edit_notes = cue.notes
+        try:
+            self._cue_edit_params_json = json.dumps(cue.params, indent=2)
+        except Exception:
+            self._cue_edit_params_json = "{}"
+        imgui.open_popup("##cue_edit_popup")
+
+    def _draw_cue_edit_popup(self, timeline_mgr: Optional["TimelineManager"]) -> None:
+        """Draw the control cue editing popup window."""
+        if self._cue_edit_id is None:
+            return
+        import json
+        from src.core.control_cue import CueType, CUE_TYPE_LABELS, CUE_TYPE_COLORS
+
+        imgui.set_next_window_size(ImVec2(380, 0))
+        if imgui.begin_popup("##cue_edit_popup"):
+            imgui.text("Edit Control Cue")
+            imgui.separator()
+
+            # Name
+            imgui.set_next_item_width(250)
+            ch, self._cue_edit_name = imgui.input_text(
+                "Name##cue_name", self._cue_edit_name, 64)
+
+            # Type combo
+            type_labels = [CUE_TYPE_LABELS[CueType(i)] for i in range(len(CueType))]
+            imgui.set_next_item_width(250)
+            ch_type, self._cue_edit_type = imgui.combo(
+                "Type##cue_type", self._cue_edit_type, type_labels)
+            if ch_type:
+                # Auto-set colour when type changes
+                ct = CueType(self._cue_edit_type)
+                self._cue_edit_color = list(CUE_TYPE_COLORS.get(ct, (0.5, 0.5, 0.5, 0.9)))
+
+            # Time
+            imgui.set_next_item_width(120)
+            ch_t, self._cue_edit_time = imgui.input_float(
+                "Time (s)##cue_time", self._cue_edit_time, 0.1, 1.0, "%.3f")
+
+            # Color
+            ch_col, self._cue_edit_color = imgui.color_edit4(
+                "Color##cue_col", self._cue_edit_color)
+
+            # Notes
+            imgui.text("Notes:")
+            ch_n, self._cue_edit_notes = imgui.input_text_multiline(
+                "##cue_notes", self._cue_edit_notes, 512,
+                ImVec2(360, 50))
+
+            # Params (raw JSON)
+            imgui.text("Params (JSON):")
+            ch_p, self._cue_edit_params_json = imgui.input_text_multiline(
+                "##cue_params", self._cue_edit_params_json, 2048,
+                ImVec2(360, 80))
+
+            imgui.separator()
+
+            # Buttons row
+            if imgui.button("Apply##cue_apply", ImVec2(80, 0)):
+                self._apply_cue_edit(timeline_mgr)
+                imgui.close_current_popup()
+            imgui.same_line()
+            if imgui.button("Copy##cue_copy", ImVec2(80, 0)):
+                self._copy_cue_from_edit(timeline_mgr)
+            imgui.same_line()
+            if imgui.button("Delete##cue_del", ImVec2(80, 0)):
+                self._delete_cue_from_edit(timeline_mgr)
+                imgui.close_current_popup()
+            imgui.same_line()
+            if imgui.button("Cancel##cue_cancel", ImVec2(80, 0)):
+                self._cue_edit_id = None
+                imgui.close_current_popup()
+
+            imgui.end_popup()
+        else:
+            # Popup was closed (clicked outside, etc.)
+            self._cue_edit_id = None
+
+    def _apply_cue_edit(self, timeline_mgr: Optional["TimelineManager"]) -> None:
+        """Write edit-popup fields back to the cue."""
+        import json
+        from src.core.control_cue import CueType
+        if not timeline_mgr or not self._cue_edit_id or not self._cue_edit_track_id:
+            return
+        result = timeline_mgr.timeline.FindTrack(self._cue_edit_track_id)
+        if not result:
+            return
+        _lay, trk = result
+        if not trk.control_cue_data:
+            return
+        for cue in trk.control_cue_data.cues:
+            if cue.cue_id == self._cue_edit_id:
+                cue.name = self._cue_edit_name
+                cue.cue_type = CueType(self._cue_edit_type)
+                cue.time = self._cue_edit_time
+                cue.color = tuple(self._cue_edit_color)
+                cue.notes = self._cue_edit_notes
+                try:
+                    cue.params = json.loads(self._cue_edit_params_json)
+                except json.JSONDecodeError:
+                    pass  # keep old params on invalid JSON
+                # Re-sort cues by time
+                trk.control_cue_data.cues.sort(key=lambda c: c.time)
+                break
+        self._cue_edit_id = None
+
+    def _copy_cue_from_edit(self, timeline_mgr: Optional["TimelineManager"]) -> None:
+        """Copy the currently-edited cue to the clipboard."""
+        if not timeline_mgr or not self._cue_edit_id or not self._cue_edit_track_id:
+            return
+        result = timeline_mgr.timeline.FindTrack(self._cue_edit_track_id)
+        if not result:
+            return
+        _lay, trk = result
+        if not trk.control_cue_data:
+            return
+        for cue in trk.control_cue_data.cues:
+            if cue.cue_id == self._cue_edit_id:
+                self._cue_clipboard = cue.duplicate()
+                break
+
+    def _delete_cue_from_edit(self, timeline_mgr: Optional["TimelineManager"]) -> None:
+        """Delete the currently-edited cue."""
+        if not timeline_mgr or not self._cue_edit_id or not self._cue_edit_track_id:
+            return
+        result = timeline_mgr.timeline.FindTrack(self._cue_edit_track_id)
+        if not result:
+            return
+        _lay, trk = result
+        if trk.control_cue_data:
+            trk.control_cue_data.remove_cue(self._cue_edit_id)
+        self._cue_edit_id = None

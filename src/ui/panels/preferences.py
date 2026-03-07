@@ -1,5 +1,5 @@
 """
-PreferencesWindow — Python port of OFS_Preferences.h / OFS_Preferences.cpp
+PreferencesWindow  --  Python port of OFS_Preferences.h / OFS_Preferences.cpp
 
 Settings persisted to ~/.ofs-pyqt/preferences.json.
 Tabs: Application | Videoplayer | Scripting | Heatmap | Colors
@@ -42,7 +42,7 @@ class PreferencesWindow:
     WindowId = "Preferences###Preferences"
 
     def __init__(self) -> None:
-        # ── Application ───────────────────────────────────────────────
+        # -- Application -----------------------------------------------
         self.language:               str   = "Default"
         self.font_size:              int   = 14
         self.font_override_path:     str   = ""
@@ -51,21 +51,21 @@ class PreferencesWindow:
         self.vsync:                  bool  = True
         self.show_metadata_on_new:   bool  = True
 
-        # ── Videoplayer ────────────────────────────────────────────────
+        # -- Videoplayer ------------------------------------------------
         self.force_hw_decoding:  bool  = True
         self.fast_step_amount:   int   = 22
         self.default_speed:      float = 1.0
 
-        # ── Scripting ─────────────────────────────────────────────────
+        # -- Scripting -------------------------------------------------
         self.auto_backup_interval: int   = 60    # seconds
         self.show_heatmap:         bool  = True
         self.show_waveform:        bool  = False
         self.action_radius:        float = 4.0
         self.max_speed_highlight:  float = 500.0   # units/s threshold
         self.highlight_max_speed:  bool  = True
-        # #3 ScaleAudio — amplitude multiplier applied to waveform overlay (1.0 = normal)
+        # #3 ScaleAudio  --  amplitude multiplier applied to waveform overlay (1.0 = normal)
         self.waveform_scale: float = 1.0
-        # #4 WaveformColor tint (RGBA 0–1 stored as list for JSON roundtrip)
+        # #4 WaveformColor tint (RGBA 0-1 stored as list for JSON roundtrip)
         self.waveform_color: List[float] = [227/255, 66/255, 52/255, 0.42]
         # #6 MaxSpeed highlight colour
         self.max_speed_color: List[float] = [0.89, 0.10, 0.10, 0.55]
@@ -79,7 +79,7 @@ class PreferencesWindow:
         self.colors: UIColors = UIColors()
         self._load()
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _load(self) -> None:
         if not PREFS_FILE.exists():
@@ -109,7 +109,7 @@ class PreferencesWindow:
         except Exception as e:
             log.warning(f"Could not save preferences: {e}")
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def Show(self) -> bool:
         """Render the preferences window. Mirrors ``OFS_Preferences::ShowPreferencesWindow``."""
@@ -129,26 +129,26 @@ class PreferencesWindow:
 
         if imgui.begin_tab_bar("##prefs_tabs"):
 
-            # ── Tab: Application ──────────────────────────────────────
+            # -- Tab: Application --------------------------------------
             if imgui.begin_tab_item("Application")[0]:
                 dirty |= self._tab_application()
                 imgui.end_tab_item()
 
-            # ── Tab: Videoplayer ──────────────────────────────────────
+            # -- Tab: Videoplayer --------------------------------------
             if imgui.begin_tab_item("Videoplayer")[0]:
                 dirty |= self._tab_videoplayer()
                 imgui.end_tab_item()
 
-            # ── Tab: Scripting ────────────────────────────────────────
+            # -- Tab: Scripting ----------------------------------------
             if imgui.begin_tab_item("Scripting")[0]:
                 dirty |= self._tab_scripting()
                 imgui.end_tab_item()
-            # ── Tab: Heatmap ───────────────────────────────────────────
+            # -- Tab: Heatmap -------------------------------------------
             if imgui.begin_tab_item("Heatmap")[0]:
                 dirty |= self._tab_heatmap()
                 imgui.end_tab_item()
 
-            # ── Tab: Colors ────────────────────────────────────────────
+            # -- Tab: Colors --------------------------------------------
             if imgui.begin_tab_item("Colors")[0]:
                 dirty |= self._tab_colors()
                 imgui.end_tab_item()
@@ -177,9 +177,9 @@ class PreferencesWindow:
             except Exception:
                 pass
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Tabs
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _tab_application(self) -> bool:
         dirty = False
@@ -233,7 +233,7 @@ class PreferencesWindow:
 
         if self.font_override_path:
             imgui.push_style_color(imgui.Col_.text, imgui.ImVec4(1.0, 0.8, 0.2, 1.0))
-            imgui.text_disabled("⚠  Font file change requires restart to apply.")
+            imgui.text_disabled("[!]  Font file change requires restart to apply.")
             imgui.pop_style_color()
         imgui.spacing()
 
@@ -379,7 +379,7 @@ class PreferencesWindow:
         return dirty
 
     def _tab_heatmap(self) -> bool:
-        """#15 heatmapSettings — configurable defaults for heatmap export."""
+        """#15 heatmapSettings  --  configurable defaults for heatmap export."""
         dirty = False
         imgui.set_next_item_width(100)
         c, v = imgui.input_int("Default width (px)##hmw",

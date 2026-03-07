@@ -1,4 +1,4 @@
-"""Core data models and services — no UI dependencies."""
+"""Core data models and services  --  no UI dependencies."""
 
 __all__ = [
     "events",

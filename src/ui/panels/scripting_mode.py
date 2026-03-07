@@ -1,18 +1,18 @@
 """
-ScriptingMode — Python port of OFS_ScriptingMode.h / OFS_ScriptingMode.cpp
+ScriptingMode  --  Python port of OFS_ScriptingMode.h / OFS_ScriptingMode.cpp
 
 Scripting modes mirror OFS exactly:
-  NORMAL      — point editing (single-click adds/moves action)
-  RECORDING   — continuous recording while playing
-  DYNAMIC     — dynamic scripting mode (OFS extension)
+  NORMAL       --  point editing (single-click adds/moves action)
+  RECORDING    --  continuous recording while playing
+  DYNAMIC      --  dynamic scripting mode (OFS extension)
 
 Exposed methods called by app:
   Init(player, undo)
   Show(player)
   Update()
-  AddEditAction(action) — called by keybinding numeric keys
+  AddEditAction(action)  --  called by keybinding numeric keys
   PreviousFrame() / NextFrame()
-  LogicalFrameTime() — seconds per "step" for current mode
+  LogicalFrameTime()  --  seconds per "step" for current mode
   SteppingIntervalForward(t) / SteppingIntervalBackward(t)
   Undo() / Redo()
 """
@@ -39,14 +39,14 @@ class ScriptingModeEnum(IntEnum):
     DYNAMIC     = 3
 
 
-# ── Overlay modes (mirrors OFS ScriptingOverlayModes) ─────────────────────────
+# -- Overlay modes (mirrors OFS ScriptingOverlayModes) -------------------------
 class OverlayModeEnum(IntEnum):
     FRAME = 0
     TEMPO = 1
     EMPTY = 2
 
 
-# Beat subdivisions — shared from core.tempo
+# Beat subdivisions  --  shared from core.tempo
 from src.core.tempo import BEAT_MULTIPLES, BEAT_NAMES
 
 
@@ -118,7 +118,7 @@ class ScriptingMode:
         # Action insert delay offset (OFS: state.actionInsertDelayMs)
         self._action_delay_ms: int = 0
 
-        # ── Overlay mode (mirrors OFS ScriptingOverlayModes) ──────────────
+        # -- Overlay mode (mirrors OFS ScriptingOverlayModes) --------------
         self.overlay_mode: OverlayModeEnum = OverlayModeEnum.FRAME
         # Frame overlay settings
         self._frame_fps_override: bool  = False
@@ -136,7 +136,7 @@ class ScriptingMode:
         # Funscript reference (set by app via active_funscript)
         self._active_getter = lambda: None
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def Init(self, player: OFS_Videoplayer, undo: UndoSystem) -> None:
         """Wire player and undo references. Mirrors ``OFS_ScriptingMode::Init``."""
@@ -152,7 +152,7 @@ class ScriptingMode:
         self._timeline_mgr = mgr
 
     def _current_time(self) -> float:
-        """Current time in seconds — prefers transport position over player."""
+        """Current time in seconds  --  prefers transport position over player."""
         if self._timeline_mgr is not None:
             return self._timeline_mgr.CurrentTime()
         if self._player:
@@ -162,9 +162,9 @@ class ScriptingMode:
     def _active(self) -> Optional[Funscript]:
         return self._active_getter()
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Frame helpers
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def LogicalFrameTime(self) -> float:
         """Seconds per single step (respects Frame overlay FPS override)."""
@@ -221,9 +221,9 @@ class ScriptingMode:
         else:
             self._player.SeekFrames(self._step_size)
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Action editing
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def AddEditAction(self, action: FunscriptAction) -> None:
         """Add or edit action at the action's timestamp. Mirrors ``OFS_ScriptingMode::AddEditAction``."""
@@ -326,9 +326,9 @@ class ScriptingMode:
         if self.mode == ScriptingModeEnum.ALTERNATING and not self._alt_context_sensitive:
             self._alt_next_inverted = not self._alt_next_inverted
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Update
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def Update(self) -> None:
         """Per-frame update (drives recording mode). Mirrors ``OFS_ScriptingMode::Update``."""
@@ -346,7 +346,7 @@ class ScriptingMode:
 
         t = self._current_time()
 
-        if self._rec_type == 0:  # HoldSample — continuous at _rec_interval_s
+        if self._rec_type == 0:  # HoldSample  --  continuous at _rec_interval_s
             if abs(t - self._rec_last_at) < self._rec_interval_s:
                 return
 
@@ -370,9 +370,9 @@ class ScriptingMode:
 
         self._rec_last_at = t
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Show
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def Show(self, player: OFS_Videoplayer) -> None:
         """Render the scripting-mode panel. Mirrors ``OFS_ScriptingMode::ShowScriptingMode``."""
@@ -399,7 +399,7 @@ class ScriptingMode:
         elif self.mode == ScriptingModeEnum.DYNAMIC:
             self._show_dynamic()
 
-        # ── Overlay mode ──────────────────────────────────────────────────
+        # -- Overlay mode --------------------------------------------------
         imgui.spacing()
         imgui.separator()
         imgui.spacing()
@@ -413,9 +413,9 @@ class ScriptingMode:
         if imgui.is_item_hovered():
             imgui.set_tooltip(
                 "Timeline overlay:\n"
-                "  Frame — vertical frame-tick lines\n"
-                "  Tempo — BPM beat grid\n"
-                "  Empty — no grid"
+                "  Frame - vertical frame-tick lines\n"
+                "  Tempo - BPM beat grid\n"
+                "  Empty - no grid"
             )
 
         if self.overlay_mode == OverlayModeEnum.FRAME:
@@ -423,7 +423,7 @@ class ScriptingMode:
         elif self.overlay_mode == OverlayModeEnum.TEMPO:
             self._show_tempo_settings()
 
-        # ── Global action offset ms ───────────────────────────────────────
+        # -- Global action offset ms ---------------------------------------
         imgui.spacing()
         imgui.separator()
         imgui.spacing()
@@ -536,7 +536,7 @@ class ScriptingMode:
             self._step_size = max(1, min(60, val))
 
     def _show_dynamic(self) -> None:
-        """DynamicInjectionMode UI — mirrors DynamicInjectionMode::DrawModeSettings."""
+        """DynamicInjectionMode UI  --  mirrors DynamicInjectionMode::DrawModeSettings."""
         imgui.text_disabled("Dynamic Injection")
         imgui.spacing()
 
@@ -589,9 +589,9 @@ class ScriptingMode:
         if changed:
             self._step_size = max(1, min(60, val))
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Overlay settings sub-panels
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _show_frame_settings(self, player: OFS_Videoplayer) -> None:
         """Frame overlay settings (OFS FrameOverlay::DrawSettings)."""

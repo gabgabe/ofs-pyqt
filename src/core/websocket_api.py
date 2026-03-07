@@ -1,5 +1,5 @@
 """
-WebSocket API — real-time OFS bridge.
+WebSocket API  --  real-time OFS bridge.
 
 Implements the OFS WebSocket extension protocol so that external tools
 (TCode firmware, haptics runtimes, custom GUIs) can subscribe to
@@ -7,7 +7,7 @@ playback events and send commands.
 
 Protocol: JSON over WebSocket, path: ws://host:port/ofs
 
-Outbound events (server → all clients):
+Outbound events (server -> all clients):
   {"type":"event","name":"time_change",         "data":{"time":<s>}}
   {"type":"event","name":"play_change",          "data":{"playing":<bool>}}
   {"type":"event","name":"duration_change",      "data":{"duration":<s>}}
@@ -17,7 +17,7 @@ Outbound events (server → all clients):
   {"type":"event","name":"funscript_change",     "data":{"name":<str>,"actions":[...]}}
   {"type":"event","name":"funscript_remove",     "data":{"name":<str>}}
 
-Inbound commands (client → server):
+Inbound commands (client -> server):
   {"type":"command","name":"change_time",           "data":{"time":<s>}}
   {"type":"command","name":"change_play",           "data":{"playing":<bool>}}
   {"type":"command","name":"change_playbackspeed",  "data":{"speed":<float>}}
@@ -231,7 +231,7 @@ class WebSocketAPI:
         return len(self._clients)
 
     # ------------------------------------------------------------------
-    # Internal — loop management
+    # Internal  --  loop management
     # ------------------------------------------------------------------
 
     def _run_loop(self) -> None:
@@ -240,7 +240,7 @@ class WebSocketAPI:
 
     async def _serve(self) -> None:
         self._stop_event = asyncio.Event()
-        # Try self._port, then self._port+1 … self._port+9
+        # Try self._port, then self._port+1 ... self._port+9
         for attempt in range(10):
             port = self._port + attempt
             try:
@@ -263,7 +263,7 @@ class WebSocketAPI:
             self._stop_event.set()
 
     # ------------------------------------------------------------------
-    # Internal — connection handler
+    # Internal  --  connection handler
     # ------------------------------------------------------------------
 
     async def _handler(self, ws: "WebSocketServerProtocol",
@@ -330,7 +330,7 @@ class WebSocketAPI:
             log.debug("_send_update_all error: %s", exc)
 
     # ------------------------------------------------------------------
-    # Internal — command dispatch
+    # Internal  --  command dispatch
     # ------------------------------------------------------------------
 
     async def _dispatch(self, msg: Dict[str, Any]) -> None:
@@ -350,7 +350,7 @@ class WebSocketAPI:
             log.warning("WS dispatch error for command %r: %s", name, e)
 
     # ------------------------------------------------------------------
-    # Internal — per-script debounced funscript broadcast
+    # Internal  --  per-script debounced funscript broadcast
     # ------------------------------------------------------------------
 
     async def _schedule_funscript(self, name: str) -> None:
@@ -364,14 +364,14 @@ class WebSocketAPI:
         self._pending_handles[name] = handle
 
     def _fire_funscript(self, name: str) -> None:
-        """Called by call_later inside the event loop — send the queued payload."""
+        """Called by call_later inside the event loop  --  send the queued payload."""
         self._pending_handles.pop(name, None)
         payload = self._pending_data.pop(name, None)
         if payload and self._clients:
             asyncio.ensure_future(self._broadcast(payload))
 
     # ------------------------------------------------------------------
-    # Internal — low-level send helpers
+    # Internal  --  low-level send helpers
     # ------------------------------------------------------------------
 
     def _broadcast_nowait(self, data: str) -> None:

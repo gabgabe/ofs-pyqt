@@ -1,14 +1,14 @@
 """
-OpenFunscripter — Python port of OpenFunscripter.h / OpenFunscripter.cpp
+OpenFunscripter  --  Python port of OpenFunscripter.h / OpenFunscripter.cpp
 
 Architecture mirrors OFS C++ exactly:
-  Init()  — SDL2 + OpenGL + ImGui + mpv + keybindings + event listeners
-  Run()   — hello_imgui main loop (callbacks: pre_new_frame, show_gui, after_swap)
-  Step()  — processEvents → update → ImGui panels → render
-  Shutdown() — destroy in correct order
+  Init()   --  SDL2 + OpenGL + ImGui + mpv + keybindings + event listeners
+  Run()    --  hello_imgui main loop (callbacks: pre_new_frame, show_gui, after_swap)
+  Step()   --  processEvents -> update -> ImGui panels -> render
+  Shutdown()  --  destroy in correct order
 
 ImGui + SDL2 + OpenGL via imgui-bundle (hello_imgui runner).
-Video via mpv render context → GL texture → imgui.image().
+Video via mpv render context -> GL texture -> imgui.image().
 No Qt anywhere.
 """
 
@@ -53,6 +53,7 @@ from src.ui.panels.track_info         import TrackInfoWindow
 from src.ui.panels.launch_wizard       import LaunchWizard
 from src.ui.panels.routing_panel       import RoutingPanel
 from src.core.routing_matrix           import RoutingMatrix
+from src.core.device_manager            import DeviceManager
 from src.ui.app_state    import OFS_Status, AUTO_BACKUP_INTERVAL, FUNSCRIPT_AXIS_NAMES
 from src.ui.app_editing  import EditingCommandsMixin
 from src.ui.app_keybindings import KeybindingsMixin
@@ -64,7 +65,7 @@ log = logging.getLogger(__name__)
 class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
     """
     Python port of C++ OpenFunscripter.
-    Single instance. Call Init() → Run() → Shutdown().
+    Single instance. Call Init() -> Run() -> Shutdown().
     """
 
     ptr: Optional["OpenFunscripter"] = None  # global singleton
@@ -72,7 +73,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
     def __init__(self) -> None:
         # Core systems
         self.player       = OFS_Videoplayer()  # primary (legacy) player
-        self._video_players: dict = {}  # track_id → OFS_Videoplayer (player pool)
+        self._video_players: dict = {}  # track_id -> OFS_Videoplayer (player pool)
         self.project      = OFS_Project()
         self.undo_system  = UndoSystem()
         self.keys         = OFS_KeybindingSystem(
@@ -100,6 +101,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         self.launch_wizard   = LaunchWizard(str(Path.home() / ".ofs-pyqt"))
         self.routing         = RoutingMatrix()
         self.routing_panel   = RoutingPanel()
+        self.device_mgr      = DeviceManager()
 
         # State
         self.status: int         = OFS_Status.NONE
@@ -137,10 +139,10 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         self._show_close_confirm:  bool           = False  # modal visible flag
         self._pending_remove_idx:  int            = -1     # track to remove (confirm modal)
 
-        # ── Add Track wizard state ──
+        # -- Add Track wizard state --
         self._axis_wiz_open: bool   = False
         self._axis_wiz_name: str    = ""       # display name (axis or filename)
-        self._axis_wiz_axis: str    = ""       # axis suffix ("surge", etc.) — empty for file-based
+        self._axis_wiz_axis: str    = ""       # axis suffix ("surge", etc.)  --  empty for file-based
         self._axis_wiz_path: str    = ""       # full path (for file-based adds)
         self._axis_wiz_mode: int    = 0        # 0 = copy from track, 1 = custom
         self._axis_wiz_copy_idx: int = 0       # index into layer list
@@ -154,9 +156,9 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         # Timestamp of last keybinding activity (for idling suppression)
         self._last_key_activity: float = 0.0
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Init
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def Init(self, cli_file: Optional[str] = None) -> bool:
         """Initialise the singleton instance. Mirrors ``OpenFunscripter::Init``."""
@@ -166,9 +168,9 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         log.info("OpenFunscripter.Init()")
         return True
 
-    # ──────────────────────────────────────────────────────────────────────
-    # Run — hello_imgui main loop
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
+    # Run  --  hello_imgui main loop
+    # ----------------------------------------------------------------------
 
     def Run(self) -> None:
         """Start the hello_imgui main loop. Mirrors ``OpenFunscripter::Run``."""
@@ -187,7 +189,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         params.imgui_window_params.show_status_bar   = False
         params.imgui_window_params.menu_app_title    = "timeline"
 
-        # FPS idling — disabled while video plays, re-enabled when paused/idle.
+        # FPS idling  --  disabled while video plays, re-enabled when paused/idle.
         # Toggled every frame in _pre_new_frame based on playback state.
         params.fps_idling.enable_idling = True
         params.fps_idling.fps_idle      = 9.0
@@ -206,16 +208,16 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
 
         hello_imgui.run(params)
 
-    # ──────────────────────────────────────────────────────────────────────
-    # Docking layout — mirrors OFS setupDefaultLayout
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
+    # Docking layout  --  mirrors OFS setupDefaultLayout
+    # ----------------------------------------------------------------------
 
     def _build_docking_params(self) -> hello_imgui.DockingParams:
         dp = hello_imgui.DockingParams()
 
-        # Splits (order matters — applied top-down)
+        # Splits (order matters  --  applied top-down)
         dp.docking_splits = [
-            # Bottom strip 10%  → BottomDock  (controls + progress)
+            # Bottom strip 10%  -> BottomDock  (controls + progress)
             hello_imgui.DockingSplit("MainDockSpace", "BottomDock",
                                      imgui.Dir.down,  0.10),
             # Timeline 15% of remaining
@@ -312,16 +314,17 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
             hello_imgui.DockableWindow(
                 label_="Track Info###TrackInfo",
                 dock_space_name_="StatsDock",
-                gui_function_=lambda: app.track_info.Show(app.timeline_mgr),
+                gui_function_=lambda: app.track_info.Show(
+                    app.timeline_mgr, app.device_mgr, app.routing),
                 is_visible_=app.show_track_info,
             ),
         ]
 
         return dp
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # hello_imgui callbacks
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _post_init(self) -> None:
         """Called after GL context + ImGui are ready."""
@@ -370,6 +373,8 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         # Init timeline manager (DAW-mode transport controller)
         self.timeline_mgr.SetPlayer(self.player)
         self.timeline_mgr.SetProject(self.project)
+        # Wire cue engine to device manager so cues can fire device commands
+        self.timeline_mgr.cue_engine.set_device_manager(self.device_mgr)
 
         # Wire ScriptingMode's FPS override + step_size into transport-level stepping.
         def _scripting_fps_info():
@@ -388,8 +393,8 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         # Shorter delay + higher rate makes held-key scrolling smooth.
         try:
             io = imgui.get_io()
-            io.key_repeat_delay = 0.150   # was 0.275 s — start repeating sooner
-            io.key_repeat_rate  = 0.020   # was 0.050 s → 50 Hz repeat
+            io.key_repeat_delay = 0.150   # was 0.275 s  --  start repeating sooner
+            io.key_repeat_rate  = 0.020   # was 0.050 s -> 50 Hz repeat
         except Exception:
             pass
 
@@ -430,6 +435,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         self.routing.rebuild_ofs_ws_outputs()
         self.routing.SetFunscriptValueGetter(self._routing_read_funscript)
         self._routing_sync_tracks()
+        self.device_mgr.sync_with_routing(self.routing)
 
         # Init web API (auto-start only if was active on last exit)
         if self._ws_active:
@@ -463,10 +469,11 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         # Process routing matrix (zero-alloc, O(active_links))
         try:
             self.routing.Process(self.timeline_mgr.CurrentTime())
+            self.device_mgr.Dispatch(self.routing)
         except Exception as exc:
             log.error(f"RoutingMatrix.Process() error: {exc}")
 
-        # Idle detection: any player playing → not idle
+        # Idle detection: any player playing -> not idle
         any_playing = self.timeline_mgr.AnyPlayerPlaying() or (
             self.player.VideoLoaded() and not self.player.IsPaused())
         idle = not any_playing
@@ -474,7 +481,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         EV.process()
         self.keys.ProcessKeybindings()
         # Suppress FPS idling while video plays OR while keys are held.
-        # Without this, paused + held arrow key → 9 FPS idle → jerky stepping.
+        # Without this, paused + held arrow key -> 9 FPS idle -> jerky stepping.
         if self.keys.any_key_active:
             self._last_key_activity = time.monotonic()
         try:
@@ -509,7 +516,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         self.script_timeline.max_speed_threshold      = self.preferences.max_speed_highlight
         self.script_timeline.waveform_scale           = self.preferences.waveform_scale
 
-        # Sync overlay mode + params from ScriptingMode → ScriptTimeline
+        # Sync overlay mode + params from ScriptingMode -> ScriptTimeline
         sc = self.scripting
         self.script_timeline.overlay_mode = int(sc.overlay_mode)
         # For FRAME overlay: use override fps if enabled, else actual video fps
@@ -526,7 +533,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
 
     def _show_gui(self) -> None:
         """All floating / non-docked windows drawn here."""
-        # Simulator — top-level floating window, no_docking prevents it from
+        # Simulator  --  top-level floating window, no_docking prevents it from
         # accidentally snapping into any dock space (including the video).
         if self.show_simulator:
             flags = (
@@ -573,7 +580,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
                 "Routing###Routing", self.show_routing, flags
             )
             if opened:
-                self.routing_panel.Show(self.routing, self.timeline_mgr)
+                self.routing_panel.Show(self.routing, self.timeline_mgr, self.device_mgr)
             imgui.end()
 
         self._draw_remove_confirm()
@@ -583,9 +590,9 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         self.launch_wizard.Show()
         self._process_wizard_result()
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Launch wizard result handler
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _process_wizard_result(self) -> None:
         """Check if the launch wizard has a confirmed action and execute it."""
@@ -646,7 +653,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         log.info(f"Wizard: new project created: {path}")
 
     def _wizard_open_template(self, template_path: str) -> None:
-        """Create a new project from a template — copy then open."""
+        """Create a new project from a template  --  copy then open."""
         if not os.path.exists(template_path):
             self._alert("Template not found", template_path)
             return
@@ -665,7 +672,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
                 dest += ".ofsp"
             shutil.copy2(template_path, dest)
             self.OpenFile(dest)
-            log.info(f"Wizard: created project from template {template_path} → {dest}")
+            log.info(f"Wizard: created project from template {template_path} -> {dest}")
         except ImportError:
             log.warning("portable_file_dialogs not available")
 
@@ -680,9 +687,9 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
     def _before_exit(self) -> None:
         self.Shutdown()
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Shutdown
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def Shutdown(self) -> None:
         """Tear down all subsystems. Mirrors ``OpenFunscripter::Shutdown``."""
@@ -694,15 +701,16 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         kb_path.parent.mkdir(parents=True, exist_ok=True)
         self.keys.Save(kb_path)
         self.web_api.Stop()
+        self.device_mgr.shutdown()
         self.thumbnail_mgr.Shutdown()
         # Shutdown all pool players (including primary if registered)
         self._destroy_all_pool_players()
         # Always shutdown the primary player too (in case it wasn't in the pool)
         self.player.Shutdown()
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Event listeners
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _register_events(self) -> None:
         EV.listen(OFS_Events.FUNSCRIPT_CHANGED,    self._on_funscript_changed)
@@ -716,9 +724,9 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         EV.listen(OFS_Events.TIMELINE_ADD_AXIS_REQUEST, self._on_add_axis_request)
         EV.listen(OFS_Events.TIMELINE_BUILT,               self._on_timeline_built)
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Routing matrix helpers
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _routing_read_funscript(self, track_id: str, time_s: float) -> float:
         """Read the interpolated funscript value for a track at *time_s*.
@@ -734,7 +742,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
                 idx = trk.funscript_data.funscript_idx
                 if 0 <= idx < len(self.project.funscripts):
                     fs = self.project.funscripts[idx]
-                    # Convert global time → track-local time
+                    # Convert global time -> track-local time
                     local_ms = (time_s - trk.offset) * 1000.0
                     if local_ms < 0:
                         return 0.0
@@ -752,12 +760,13 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         self.routing.sync_funscript_tracks(tracks)
 
     def _on_timeline_built(self, **kw) -> None:
-        """Called when the timeline layout is rebuilt — re-sync routing inputs."""
+        """Called when the timeline layout is rebuilt  --  re-sync routing inputs."""
         self._routing_sync_tracks()
+        self.device_mgr.sync_with_routing(self.routing)
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Video player pool management
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _create_player_for_track(self, track_id: str, media_path: str) -> Optional[OFS_Videoplayer]:
         """Create, init, and register a new video player for a track.
@@ -826,12 +835,12 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         self.timeline_mgr.AddOrUpdateVideoTrack(track_id)
         self.web_api.BroadcastDurationChange(duration)
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Timeline action handlers  (mirrors OFS ScriptTimelineAction* handlers)
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _on_timeline_action_clicked(self, action, script, **kw) -> None:
-        """Left-click on dot: Ctrl/Shift → multi-select, else → seek  (mirrors OFS ScriptTimelineActionClicked)."""
+        """Left-click on dot: Ctrl/Shift -> multi-select, else -> seek  (mirrors OFS ScriptTimelineActionClicked)."""
         from imgui_bundle import imgui as _imgui
         io = _imgui.get_io()
         if io.key_ctrl or io.key_shift:
@@ -873,7 +882,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
                 script.SelectAction(action)
 
     def _on_track_selected(self, track_id: str, **kw) -> None:
-        """A track was clicked in the DAW — select it in the Track Info panel."""
+        """A track was clicked in the DAW  --  select it in the Track Info panel."""
         self.track_info.SelectTrack(track_id)
         self.player_controls.SetSelectedTrackId(track_id)
         self.script_timeline._selected_track_id = track_id
@@ -881,7 +890,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         self.status |= OFS_Status.GRADIENT_NEEDS_UPDATE
 
     def _on_track_deselected(self, **kw) -> None:
-        """Clicked empty space in DAW — deselect the track."""
+        """Clicked empty space in DAW  --  deselect the track."""
         self.track_info.SelectTrack(None)
         self.player_controls.SetSelectedTrackId(None)
         self.script_timeline._selected_track_id = None
@@ -901,7 +910,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
             if p is self.player:
                 self._on_video_loaded_for_track(tid, path)
                 return
-        # Legacy fallback — no pool registration
+        # Legacy fallback  --  no pool registration
         self.status |= OFS_Status.GRADIENT_NEEDS_UPDATE
         self.timeline_mgr.AddOrUpdateVideoTrack()
         self.waveform.clear()
@@ -944,7 +953,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
             self.web_api.BroadcastFunscriptRemove(title)
 
     def _on_backend_event(self, event) -> bool:
-        """SDL2 backend event callback — handle drop-file events.
+        """SDL2 backend event callback  --  handle drop-file events.
         Returns True if the event was consumed."""
         try:
             # event is a hello_imgui.BackendEvent (contains .sdl_event)
@@ -968,9 +977,9 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
             log.debug(f"_on_backend_event: {e}")
         return False
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Project management (mirrors OFS openFile / initProject / closeProject)
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def OpenFile(self, path: str) -> None:
         """Open a media / funscript / project file. Mirrors ``OpenFunscripter::openFile``."""
@@ -1001,7 +1010,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
             if self.project.is_valid:
                 self._import_funscript_to_timeline(path)
             else:
-                # No project open — create one from the funscript
+                # No project open  --  create one from the funscript
                 self.project.reset()
                 ok = self.project.ImportFromFunscript(path)
                 if ok:
@@ -1011,11 +1020,11 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
                 else:
                     self._alert("Failed to import", self.project.errors)
         else:
-            # Media file — add as video track to timeline
+            # Media file  --  add as video track to timeline
             if self.project.is_valid:
                 self._add_media_to_timeline(path)
             else:
-                # No project open — create one from the media
+                # No project open  --  create one from the media
                 self.project.reset()
                 ok = self.project.ImportFromMedia(path)
                 if ok:
@@ -1036,6 +1045,16 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         self.timeline_mgr.SetProject(self.project)
         self.timeline_mgr.BuildFromProject()
 
+        # Restore routing + device config from project
+        routing_d = self.project._extra_state.get("routing")
+        if routing_d:
+            self.routing.from_dict(routing_d)
+        dm_d = self.project._extra_state.get("device_manager")
+        if dm_d:
+            self.device_mgr.from_dict(dm_d)
+        self.device_mgr.sync_with_routing(self.routing)
+        self.device_mgr.apply_saved_backend_classes(self.routing)
+
         # Create a player for every video track that has a media_path.
         # The first track reuses self.player (legacy primary); additional
         # tracks get fresh player instances from the pool.
@@ -1051,7 +1070,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
                 if mpath and os.path.exists(mpath):
                     self.player.OpenVideo(mpath)
                 elif not mpath:
-                    # Empty placeholder track (new project) — no video to open
+                    # Empty placeholder track (new project)  --  no video to open
                     pass
                 else:
                     # Fallback: try legacy project.media_path for old .ofsp files
@@ -1081,6 +1100,9 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
             return
         # Persist timeline layout in project extra-state
         self.timeline_mgr.SaveToProject()
+        # Persist routing matrix + device manager config
+        self.project._extra_state["routing"] = self.routing.to_dict()
+        self.project._extra_state["device_manager"] = self.device_mgr.to_dict()
         self.project.Save()
 
     def QuickExport(self) -> None:
@@ -1126,7 +1148,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         if path not in self.recent_files:
             self.recent_files.append(path)
 
-        # Build empty timeline — user adds video/funscript tracks manually
+        # Build empty timeline  --  user adds video/funscript tracks manually
         self.timeline_mgr.SetProject(self.project)
         self.timeline_mgr.BuildFromProject()
 
@@ -1181,12 +1203,12 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
     def _update_title(self) -> None:
         title = "OpenFunscripter"
         if self.project.is_valid:
-            title = f"OpenFunscripter — {self.project.path}"
+            title = f"OpenFunscripter - {self.project.path}"
         hello_imgui.get_runner_params().app_window_params.window_title = title
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # About window
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _show_ws_window(self) -> None:
         """Simple WebSocket API status window with start/stop toggle."""
@@ -1219,21 +1241,21 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
             imgui.WindowFlags_.no_collapse | imgui.WindowFlags_.always_auto_resize
         )
         if opened:
-            imgui.text_unformatted("OpenFunscripter — Python port")
+            imgui.text_unformatted("OpenFunscripter - Python port")
             imgui.text_unformatted("Uses Dear ImGui + SDL2 + mpv render context")
             imgui.separator()
             if imgui.button("Close", ImVec2(-1, 0)):
                 self.show_about = False
         imgui.end()
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # File dialogs
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
-    # ── Project window ────────────────────────────────────────────────────
+    # -- Project window ----------------------------------------------------
 
     def _show_project_window(self) -> None:
-        """Mirrors OFS_Project::ShowProjectWindow — modal popup."""
+        """Mirrors OFS_Project::ShowProjectWindow  --  modal popup."""
         imgui.open_popup("Project###project_cfg")
         flags = imgui.WindowFlags_.no_docking | imgui.WindowFlags_.always_auto_resize
         opened, self.show_project_editor = imgui.begin_popup_modal(
@@ -1274,7 +1296,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         except Exception as exc:
             log.warning(f"_repath_funscript_dialog: {exc}")
 
-    # ── Script track management ───────────────────────────────────────────
+    # -- Script track management -------------------------------------------
 
     def _is_script_already_loaded(self, path: str) -> bool:
         """Return True if a funscript with the same filename is already loaded."""
@@ -1297,7 +1319,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
             new_path = str(mp.with_suffix("").parent /
                            (mp.stem + f".{axis}.funscript"))
         else:
-            # No legacy media_path — try per-track video media path
+            # No legacy media_path  --  try per-track video media path
             vtracks = self.timeline_mgr.timeline.VideoTracks()
             vpath = ""
             for _lay, vt in vtracks:
@@ -1409,7 +1431,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
             log.warning(f"_add_existing_funscript_dialog: {exc}")
 
     def _draw_close_confirm(self) -> None:
-        """'You have unsaved changes — save, discard, or cancel?' modal."""
+        """'You have unsaved changes  --  save, discard, or cancel?' modal."""
         if not self._show_close_confirm:
             return
         imgui.open_popup("Unsaved changes###close_confirm")
@@ -1450,7 +1472,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
                 imgui.close_current_popup()
             imgui.end_popup()
 
-    # ── Add Track wizard ──────────────────────────────────────────────
+    # -- Add Track wizard ----------------------------------------------
 
     # Colour palette for the Add Track wizard
     _WIZ_PALETTE = [
@@ -1480,7 +1502,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         if not opened:
             return
 
-        # ── Editable track name ───────────────────────────────────────
+        # -- Editable track name ---------------------------------------
         imgui.text("Name")
         imgui.same_line(100)
         imgui.set_next_item_width(250)
@@ -1491,7 +1513,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         imgui.separator()
         imgui.spacing()
 
-        # ── Colour palette ────────────────────────────────────────────
+        # -- Colour palette --------------------------------------------
         imgui.text("Colour")
         imgui.same_line(100)
         pal = self._WIZ_PALETTE
@@ -1524,7 +1546,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         imgui.separator()
         imgui.spacing()
 
-        # ── Mode selection: Copy vs Custom ────────────────────────────
+        # -- Mode selection: Copy vs Custom ----------------------------
         if imgui.radio_button("Copy from existing track", self._axis_wiz_mode == 0):
             self._axis_wiz_mode = 0
         if imgui.radio_button("Custom timing", self._axis_wiz_mode == 1):
@@ -1538,7 +1560,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         all_tracks = tl.AllTracks()
 
         if self._axis_wiz_mode == 0:
-            # ── Copy from track ───────────────────────────────────────
+            # -- Copy from track ---------------------------------------
             labels = []
             for _lay, trk in all_tracks:
                 t_label = "VIDEO" if trk.track_type == 0 else trk.name
@@ -1564,7 +1586,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
             else:
                 imgui.text_disabled("No tracks available to copy from.")
         else:
-            # ── Custom timing ─────────────────────────────────────────
+            # -- Custom timing -----------------------------------------
             field_w = 200.0
 
             imgui.text("Offset")
@@ -1590,7 +1612,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         imgui.separator()
         imgui.spacing()
 
-        # ── Action buttons ────────────────────────────────────────────
+        # -- Action buttons --------------------------------------------
         if imgui.button("Create", ImVec2(120, 0)):
             self._finalize_add_track()
             self._axis_wiz_open = False
@@ -1709,7 +1731,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         from src.core.timeline import Track, TrackType, VideoTrackData
 
         if not self.project.is_valid:
-            log.warning("No project open — cannot add media track.")
+            log.warning("No project open - cannot add media track.")
             return
 
         # Use the filename (no extension) as the track name
@@ -1721,7 +1743,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
         if all_tracks:
             offset = max(t.end for _l, t in all_tracks)
 
-        # Create a placeholder video track — duration will be updated once
+        # Create a placeholder video track  --  duration will be updated once
         # mpv reports the real duration.
         placeholder_dur = 10.0
         vtrack = Track(
@@ -1758,7 +1780,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
     def _import_funscript_to_timeline(self, path: str) -> None:
         """Import a .funscript file into the current project as a new axis track."""
         if not self.project.is_valid:
-            log.warning("No project open — cannot import funscript.")
+            log.warning("No project open - cannot import funscript.")
             return
         ok = self.project.AddFunscript(path)
         if ok:
@@ -1785,26 +1807,26 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
     def _export_all_dialog(self) -> None:
         """Open a directory picker and export all funscripts into it.
 
-        Mirrors OFS ShowMainMenuBar → Export All (multi-script path):
-          Util::OpenDirectoryDialog → LoadedProject->ExportFunscripts(dir)
+        Mirrors OFS ShowMainMenuBar -> Export All (multi-script path):
+          Util::OpenDirectoryDialog -> LoadedProject->ExportFunscripts(dir)
         """
         try:
             from imgui_bundle import portable_file_dialogs as pfd
             default = str(Path(self.project.path).parent) if self.project.path else ""
-            result = pfd.select_folder("Export all funscripts to…", default).result()
+            result = pfd.select_folder("Export all funscripts to...", default).result()
             if result:
                 count = self.project.ExportFunscripts(output_dir=result)
                 log.info(f"Exported {count} script(s) to {result}")
         except ImportError:
             pass
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Helpers
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # App state persistence (panel visibility, display flags, WS preference)
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _load_app_state(self) -> None:
         """Restore panel visibility + misc flags from ~/.ofs-pyqt/app_state.json."""

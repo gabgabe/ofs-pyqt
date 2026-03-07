@@ -1,5 +1,5 @@
 """
-TimelineManager — controller bridging the Timeline model with the video player,
+TimelineManager  --  controller bridging the Timeline model with the video player,
 project, and event system.
 
 Responsibilities
@@ -22,6 +22,8 @@ from src.core.timeline import (
     Timeline, Transport, Layer, Track, TrackType,
     VideoTrackData, FunscriptTrackData, TriggerTrackData,
 )
+from src.core.control_cue import ControlCue, ControlCueTrackData
+from src.core.cue_engine import CueEngine
 
 if TYPE_CHECKING:
     from src.core.video_player import OFS_Videoplayer
@@ -41,6 +43,7 @@ _FUNSCRIPT_COLORS = [
     (0.40, 0.68, 0.27, 1.0),
 ]
 _TRIGGER_COLOR    = (0.80, 0.55, 0.10, 1.0)
+_CUE_TRACK_COLOR  = (0.25, 0.60, 0.90, 1.0)
 
 
 class TimelineManager:
@@ -49,27 +52,29 @@ class TimelineManager:
     def __init__(self) -> None:
         self.timeline: Timeline = Timeline()
         self._player: Optional["OFS_Videoplayer"]  = None   # legacy primary
-        self._players: Dict[str, "OFS_Videoplayer"] = {}     # track_id → player
+        self._players: Dict[str, "OFS_Videoplayer"] = {}     # track_id -> player
         self._project: Optional["OFS_Project"]     = None
-        self._slaving_video: bool = True   # True → transport drives mpv
+        self._slaving_video: bool = True   # True -> transport drives mpv
         self._last_transport_pos: float = -1.0
         self._last_positions: Dict[str, float] = {}  # per-track last seek position
         self._was_in_clip: Dict[str, bool] = {}      # per-track: was inside clip last tick?
         self._last_seek_wall: Dict[str, float] = {}  # per-track: monotonic time of last seek issued
-        self._SEEK_COOLDOWN: float = 0.35            # seconds — don't drift-correct within this of a seek
+        self._SEEK_COOLDOWN: float = 0.35            # seconds  --  don't drift-correct within this of a seek
         self._transport_initiated: bool = False       # True after Transport.Seek(); prevents SyncFromPlayer from overriding
         self._frame_step_pending: bool = False        # True when player was frame-stepped; bypasses cooldown in SyncFromPlayer
         self._last_step_wall: float = 0.0             # monotonic time of last StepFrames() call
         self._step_settle_pending: bool = False        # True while waiting to re-center cache after stepping stops
         self._STEP_SETTLE_DELAY: float = 0.20          # seconds of idle after last step before re-centering cache
-        # Optional callback → (fps_override: Optional[float], step_size: int)
+        # Optional callback -> (fps_override: Optional[float], step_size: int)
         # Allows ScriptingMode's FPS override and step-size to feed into
         # transport-level stepping without a hard dependency.
         self._scripting_fps_getter: Optional[Callable] = None
-
-    # ──────────────────────────────────────────────────────────────────────
+        # Control cue engine
+        self.cue_engine: CueEngine = CueEngine()
+        self._last_cue_pos: float = -1.0   # previous position for cue scanning
+    # ----------------------------------------------------------------------
     # Wiring
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def SetPlayer(self, player: "OFS_Videoplayer") -> None:
         """Set the legacy primary player (backward compat)."""
@@ -83,13 +88,13 @@ class TimelineManager:
 
         *fps_override* is either a positive float (ScriptingMode FPS
         override) or ``None`` (use video / project FPS).
-        *step_size* is an int ≥ 1 (ScriptingMode step multiplier).
+        *step_size* is an int >= 1 (ScriptingMode step multiplier).
         """
         self._scripting_fps_getter = fn
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Player pool management
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def RegisterPlayer(self, track_id: str, player: "OFS_Videoplayer") -> None:
         """Register a video player for a specific track."""
@@ -126,7 +131,7 @@ class TimelineManager:
         return self._player if (self._player and self._player.VideoLoaded()) else None
 
     def AllPlayers(self) -> Dict[str, "OFS_Videoplayer"]:
-        """Return a copy of the track_id → player dict."""
+        """Return a copy of the track_id -> player dict."""
         return dict(self._players)
 
     def AnyPlayerLoaded(self) -> bool:
@@ -156,16 +161,38 @@ class TimelineManager:
                 return True
         return False
 
-    # ──────────────────────────────────────────────────────────────────────
-    # Per-frame tick — called from _pre_new_frame
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
+    # Per-frame tick  --  called from _pre_new_frame
+    # ----------------------------------------------------------------------
 
     def Tick(self) -> None:
         """Advance the transport and slave all video players to it."""
         transport = self.timeline.transport
+        prev_pos = transport.position
         transport.Tick()
 
         pos = transport.position
+
+        # -- Fire control cues crossing the playhead ------------------------
+        if transport.is_playing and self._last_cue_pos >= 0:
+            for _lay, ctrack in self.timeline.ControlCueTracks():
+                if _lay.muted or not ctrack.control_cue_data:
+                    continue
+                # Convert track-local cue times to global
+                global_cues = []
+                for cue in ctrack.control_cue_data.cues:
+                    gc = ControlCue(
+                        cue_id=cue.cue_id,
+                        name=cue.name,
+                        cue_type=cue.cue_type,
+                        time=ctrack.LocalToGlobal(cue.time),
+                        color=cue.color,
+                        params=cue.params,
+                        notes=cue.notes,
+                    )
+                    global_cues.append(gc)
+                self.cue_engine.tick(self._last_cue_pos, pos, global_cues)
+        self._last_cue_pos = pos
 
         # Slave each video player to its corresponding track.
         if not self._slaving_video:
@@ -190,20 +217,20 @@ class TimelineManager:
             if transport.is_playing:
                 if in_clip:
                     if not was_in_clip:
-                        # ── Entering clip: seek FIRST, then unpause. ──
+                        # -- Entering clip: seek FIRST, then unpause. --
                         player.SetPositionExact(media_t)
                         self._last_seek_wall[vtrack.id] = now
                         player.SetPaused(False)
                         if abs(player.CurrentSpeed() - transport.speed) > 0.01:
                             player.SetSpeed(transport.speed)
                     else:
-                        # ── Already inside clip: let mpv play freely ──
+                        # -- Already inside clip: let mpv play freely --
                         # During normal playback, mpv's internal position
                         # naturally lags the transport by up to ~0.3 s.
                         # Issuing seeks to correct this small drift
                         # forces mpv to flush its decode pipeline and
                         # causes visible video stutter.  Only intervene
-                        # for catastrophic drift (>2 s — e.g. after a
+                        # for catastrophic drift (>2 s  --  e.g. after a
                         # speed change or external seek).
                         mpv_t = player.CurrentTime()
                         drift = abs(mpv_t - media_t)
@@ -217,10 +244,10 @@ class TimelineManager:
                         if abs(player.CurrentSpeed() - transport.speed) > 0.01:
                             player.SetSpeed(transport.speed)
                 else:
-                    # Transport is outside the video clip — pause this player.
+                    # Transport is outside the video clip  --  pause this player.
                     if not player.IsPaused():
                         player.SetPaused(True)
-                    # ── Pre-seek: position the player at the clip start so
+                    # -- Pre-seek: position the player at the clip start so
                     # it's ready to go when the transport enters the clip.
                     if pos < vtrack.offset:
                         pre_t = vtrack.GlobalToMedia(vtrack.offset)
@@ -241,7 +268,7 @@ class TimelineManager:
                 if player._seeking and not self._transport_initiated:
                     self._frame_step_pending = True
                 # Seek the player when the transport position changed.
-                # When transport_initiated, skip the cooldown entirely —
+                # When transport_initiated, skip the cooldown entirely  -- 
                 # the user just stepped and expects instant visual feedback.
                 pos_changed = abs(pos - last_pos) > 0.001
                 cooldown_ok = since_seek > self._SEEK_COOLDOWN
@@ -263,7 +290,7 @@ class TimelineManager:
 
         self._last_transport_pos = pos
 
-        # ── Cache settle: re-center mpv demuxer cache after stepping stops ─
+        # -- Cache settle: re-center mpv demuxer cache after stepping stops -
         # When the user stops pressing arrow keys, re-issue a seek to the
         # current position.  This forces mpv to flush its old cache and
         # read ahead/behind from the NEW position, so the next burst of
@@ -282,9 +309,9 @@ class TimelineManager:
                         p2.SetPositionExact(mt2)
                         self._last_seek_wall[vt2.id] = now
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Build from project  (call AFTER video is loaded)
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def BuildFromProject(self) -> None:
         """
@@ -293,7 +320,7 @@ class TimelineManager:
         * Tries to restore a previously saved layout from
           ``project._extra_state["timeline"]``.
         * If none exists, builds a default layout:
-          Layer 0 → video track, one layer per loaded funscript.
+          Layer 0 -> video track, one layer per loaded funscript.
         """
         if not self._project:
             return
@@ -320,7 +347,7 @@ class TimelineManager:
             self.timeline = tl
             return
 
-        # Layer 0 — Video track (only if project has media)
+        # Layer 0  --  Video track (only if project has media)
         if p.media_path:
             vid_dur = 10.0
             vid_layer = tl.AddLayer("Video")
@@ -387,9 +414,9 @@ class TimelineManager:
                 )
                 layer.AddTrack(track)
 
-    # ──────────────────────────────────────────────────────────────────────
-    # Update video tracks  (deferred — called from _on_video_loaded)
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
+    # Update video tracks  (deferred  --  called from _on_video_loaded)
+    # ----------------------------------------------------------------------
 
     def AddOrUpdateVideoTrack(self, track_id: Optional[str] = None) -> None:
         """Update video track(s) with actual video duration and trim.
@@ -452,9 +479,9 @@ class TimelineManager:
                 if trk.duration < longest_dur:
                     trk.duration = longest_dur
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Funscript track auto-expand
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def ExpandIfNeeded(self, script_idx: int, action_time_s: float) -> None:
         """Called after an action is added.  If it approaches the track end, grow."""
@@ -464,9 +491,9 @@ class TimelineManager:
                 self.timeline.ExpandFunscriptTrack(trk, local_t)
                 return
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Add / remove tracks
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def AddFunscriptTrack(
         self, script_idx: int, *, offset: float = 0.0,
@@ -525,6 +552,30 @@ class TimelineManager:
             return track
         return None
 
+    def AddControlCueTrack(
+        self, name: str = "Control Cues", *,
+        offset: float = 0.0, duration: float = 0.0, layer_idx: int = -1,
+    ) -> Optional[Track]:
+        """Add a new control-cue track."""
+        if duration <= 0:
+            # Match the longest existing track
+            duration = max(60.0, self.timeline.duration)
+        track = Track(
+            name=name,
+            track_type=TrackType.CONTROL_CUE,
+            offset=offset,
+            duration=duration,
+            color=_CUE_TRACK_COLOR,
+            control_cue_data=ControlCueTrackData(),
+        )
+        if layer_idx < 0 or layer_idx >= len(self.timeline.layers):
+            layer = self.timeline.AddLayer(name)
+        else:
+            layer = self.timeline.layers[layer_idx]
+        if layer.AddTrack(track):
+            return track
+        return None
+
     def RemoveTrack(self, track_id: str) -> bool:
         result = self.timeline.FindTrack(track_id)
         if result is None:
@@ -533,9 +584,9 @@ class TimelineManager:
         layer.RemoveTrack(track_id)
         return True
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Move track to a different layer
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def MoveTrackToLayer(self, track_id: str, target_layer_idx: int) -> bool:
         """Move a track from its current layer into a different one."""
@@ -552,9 +603,9 @@ class TimelineManager:
         dst_layer.AddTrack(track)
         return True
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Serialisation helpers (project._extra_state)
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def SaveToProject(self) -> None:
         """Persist the timeline layout into the project's extra-state dict."""
@@ -566,9 +617,9 @@ class TimelineManager:
         """Restore the timeline layout from the project's extra-state dict."""
         self.BuildFromProject()
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Transport shortcuts (convenience for keybindings / WS API)
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def SyncFromPlayer(self) -> None:
         """Pull the transport position from the active video player.
@@ -578,19 +629,19 @@ class TimelineManager:
         requiring every caller to know about the transport.
 
         When the transport is **playing** the transport is the master clock,
-        so we skip the sync entirely — otherwise we'd pull the transport
+        so we skip the sync entirely  --  otherwise we'd pull the transport
         back to a stale mpv position before mpv has finished processing a
         seek, creating a ping-pong loop.
 
         When the transport is outside all video clip ranges we also skip
         so that transport-initiated seeks beyond the video are not pulled back.
         """
-        # Transport is master when playing — don't override it.
+        # Transport is master when playing  --  don't override it.
         if self.transport.is_playing:
             return
 
         # If the last seek was transport-initiated (user click / keybinding),
-        # don't override with mpv's frame-rounded position — that causes
+        # don't override with mpv's frame-rounded position  --  that causes
         # the visible off-by-one-frame cursor jump.
         if self._transport_initiated:
             return
@@ -599,7 +650,7 @@ class TimelineManager:
         now = _time.monotonic()
 
         # Find the first video track that contains the transport position
-        # and has a loaded player — sync from that player.
+        # and has a loaded player  --  sync from that player.
         has_video_tracks = False
         for _lay, vtrack in self.timeline.VideoTracks():
             has_video_tracks = True
@@ -609,12 +660,12 @@ class TimelineManager:
             if not player or not player.VideoLoaded():
                 continue
 
-            # Don't sync from player if a seek was recently issued — mpv
+            # Don't sync from player if a seek was recently issued  --  mpv
             # hasn't finished processing it yet and CurrentTime() is stale.
             # Also skip if the player itself is mid-seek (e.g. frame-step).
             if player._seeking:
                 return
-            # Bypass cooldown when a frame-step just completed — we need
+            # Bypass cooldown when a frame-step just completed  --  we need
             # to pull the new position into the transport immediately so
             # the cursor updates on the same frame the arrow key was pressed.
             if not self._frame_step_pending:
@@ -653,6 +704,9 @@ class TimelineManager:
 
     def Seek(self, t: float) -> None:
         self.transport.Seek(t)
+        # Reset cue engine fired-set so cues can fire again at new position
+        self.cue_engine.reset()
+        self._last_cue_pos = t
         # Mark that this seek came from the transport (user / keybinding) so
         # SyncFromPlayer doesn't override it with mpv's frame-rounded position.
         self._transport_initiated = True
@@ -721,7 +775,7 @@ class TimelineManager:
         # (bypassing cooldown) and SyncFromPlayer doesn't override
         # the position.
         self._transport_initiated = True
-        # Do NOT stamp _last_seek_wall here — Tick() will do it when
+        # Do NOT stamp _last_seek_wall here  --  Tick() will do it when
         # it actually issues the SetPositionExact() to the player.
         # Stamping here would make Tick() wait for the cooldown,
         # adding 350 ms of perceived latency to every step.
@@ -743,9 +797,9 @@ class TimelineManager:
     def AddSpeed(self, delta: float) -> None:
         self.transport.speed = max(0.1, self.transport.speed + delta)
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Query helpers used by the UI
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def TrackForFunscript(self, script_idx: int) -> Optional[Track]:
         """Return the Track mapped to funscript[script_idx], or None."""
@@ -765,16 +819,16 @@ class TimelineManager:
         lay = self.LayerForFunscript(script_idx)
         return lay.muted if lay else False
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Internal helpers
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _funscript_duration(self, fs: "Funscript") -> float:
         """Compute initial duration for a funscript track.
 
-        * If the script has actions → last action + 5 s margin.
-        * If any video player is loaded → use its duration.
-        * Otherwise → 10 s placeholder (resized in AddOrUpdateVideoTrack).
+        * If the script has actions -> last action + 5 s margin.
+        * If any video player is loaded -> use its duration.
+        * Otherwise -> 10 s placeholder (resized in AddOrUpdateVideoTrack).
         """
         if fs.actions and len(fs.actions) > 0:
             last_ms = fs.actions[-1].at

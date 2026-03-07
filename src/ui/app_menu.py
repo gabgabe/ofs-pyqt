@@ -1,4 +1,4 @@
-"""Main menu bar mixin — mirrors ``OpenFunscripter::ShowMainMenuBar`` in OpenFunscripter.cpp.
+"""Main menu bar mixin  --  mirrors ``OpenFunscripter::ShowMainMenuBar`` in OpenFunscripter.cpp.
 
 Renders the File / Project / Edit / Select / View / Options / ? menus
 via Dear ImGui.  The unsaved-edits timer tints the menu bar red
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 
 class MenuBarMixin:
-    """Mixin providing ``_show_main_menu()`` — extracted from OpenFunscripter.
+    """Mixin providing ``_show_main_menu()``  --  extracted from OpenFunscripter.
 
     Mirrors ``OpenFunscripter::ShowMainMenuBar`` (OpenFunscripter.cpp).
     """
@@ -27,7 +27,7 @@ class MenuBarMixin:
     def _show_main_menu(self: "OpenFunscripter") -> None:
         """Called inside BeginMainMenuBar / EndMainMenuBar by hello_imgui."""
 
-        # ── Menu bar alert: red background when unsaved > 5 min ───────────
+        # -- Menu bar alert: red background when unsaved > 5 min -----------
         if self.project.is_valid and self.project.HasUnsavedEdits():
             if self._unsaved_since == 0.0:
                 self._unsaved_since = time.monotonic()
@@ -47,7 +47,7 @@ class MenuBarMixin:
         else:
             self._unsaved_since = 0.0
 
-        # ── FILE ──────────────────────────────────────────────────────────
+        # -- FILE ----------------------------------------------------------
         if imgui.begin_menu("File"):
             if imgui.menu_item("Project Wizard...", "", False)[0]:
                 self.launch_wizard.SetRecentFiles(self.recent_files)
@@ -95,13 +95,13 @@ class MenuBarMixin:
                 subprocess.Popen(["open", self._prefpath("backup")])
             imgui.end_menu()
 
-        # ── PROJECT ───────────────────────────────────────────────────────
+        # -- PROJECT -------------------------------------------------------
         valid = self.project.is_valid
         if imgui.begin_menu("Project", valid):
             _, self.show_project_editor = imgui.menu_item(
                 "Configure", "", self.show_project_editor)
             imgui.separator()
-            # ── Add submenu ──────────────────────────────────
+            # -- Add submenu ----------------------------------
             if imgui.begin_menu("Add"):
                 if imgui.menu_item("Add media...", "", False)[0]:
                     self._add_media_dialog()
@@ -116,7 +116,7 @@ class MenuBarMixin:
                 if imgui.menu_item("Add existing...", "", False)[0]:
                     self._add_existing_funscript_dialog()
                 imgui.end_menu()
-            # ── Remove submenu ──────────────────────────────
+            # -- Remove submenu ------------------------------
             if imgui.begin_menu("Remove", valid and len(self.project.funscripts) > 0):
                 remove_idx = -1
                 for i, s in enumerate(self.project.funscripts):
@@ -127,7 +127,7 @@ class MenuBarMixin:
                 imgui.end_menu()
             imgui.end_menu()
 
-        # ── EDIT ──────────────────────────────────────────────────────────
+        # -- EDIT ----------------------------------------------------------
         if imgui.begin_menu("Edit"):
             s = self._active()
             can_undo = not self.undo_system.undo_empty
@@ -146,13 +146,13 @@ class MenuBarMixin:
                 self.player.SaveFrameToImage(self._prefpath("screenshot"))
             has_heatmap = bool(self.player_controls._heatmap_colours)
             imgui.separator()
-            if imgui.menu_item("Save heatmap…", "", False, has_heatmap)[0]:
+            if imgui.menu_item("Save heatmap...", "", False, has_heatmap)[0]:
                 self._save_heatmap_dialog(with_chapters=False)
-            if imgui.menu_item("Save heatmap with chapters…", "", False, has_heatmap)[0]:
+            if imgui.menu_item("Save heatmap with chapters...", "", False, has_heatmap)[0]:
                 self._save_heatmap_dialog(with_chapters=True)
             imgui.end_menu()
 
-        # ── SELECT ────────────────────────────────────────────────────────
+        # -- SELECT --------------------------------------------------------
         if imgui.begin_menu("Select"):
             s = self._active()
             has_sel = bool(s and s.HasSelection())
@@ -175,7 +175,7 @@ class MenuBarMixin:
             if imgui.menu_item("Isolate",  "R", False)[0]: self.IsolateAction()
             imgui.end_menu()
 
-        # ── VIEW ──────────────────────────────────────────────────────────
+        # -- VIEW ----------------------------------------------------------
         if imgui.begin_menu("View"):
             _, self.show_statistics  = imgui.menu_item("Statistics",       "", self.show_statistics)
             _, self.show_history     = imgui.menu_item("Undo history",     "", self.show_history)
@@ -197,7 +197,7 @@ class MenuBarMixin:
                 self.player_window.reset_translation_and_zoom()
             imgui.end_menu()
 
-        # ── OPTIONS ───────────────────────────────────────────────────────
+        # -- OPTIONS -------------------------------------------------------
         if imgui.begin_menu("Options"):
             if imgui.menu_item("Keybindings...", "", False)[0]:
                 self.keys.ShowModal()
@@ -205,7 +205,7 @@ class MenuBarMixin:
                 self.show_preferences = True
             imgui.end_menu()
 
-        # ── ? ─────────────────────────────────────────────────────────────
+        # -- ? -------------------------------------------------------------
         if imgui.begin_menu("?"):
             imgui.end_menu()
         if imgui.is_item_clicked():

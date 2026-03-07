@@ -1,5 +1,5 @@
 """
-Undo/Redo System — Python port of OFS_UndoSystem + FunscriptUndoSystem.
+Undo/Redo System  --  Python port of OFS_UndoSystem + FunscriptUndoSystem.
 
 Architecture mirrors OFS exactly:
   - Each Funscript carries its own FunscriptUndoSystem (per-script stacks).
@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# StateType — mirrors OFS StateType enum exactly
+# StateType  --  mirrors OFS StateType enum exactly
 # ---------------------------------------------------------------------------
 
 class StateType(IntEnum):
@@ -99,7 +99,7 @@ def state_label(t: StateType) -> str:
 
 
 # ---------------------------------------------------------------------------
-# FunscriptData snapshot — mirrors OFS Funscript::FunscriptData
+# FunscriptData snapshot  --  mirrors OFS Funscript::FunscriptData
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -118,7 +118,7 @@ class FunscriptData:
 
 
 # ---------------------------------------------------------------------------
-# ScriptState — per-script undo entry (mirrors OFS ScriptState)
+# ScriptState  --  per-script undo entry (mirrors OFS ScriptState)
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -130,7 +130,7 @@ class ScriptState:
 
 
 # ---------------------------------------------------------------------------
-# FunscriptUndoSystem — per-script undo stacks (mirrors OFS FunscriptUndoSystem)
+# FunscriptUndoSystem  --  per-script undo stacks (mirrors OFS FunscriptUndoSystem)
 # ---------------------------------------------------------------------------
 
 class FunscriptUndoSystem:
@@ -214,7 +214,7 @@ class FunscriptUndoSystem:
 
 
 # ---------------------------------------------------------------------------
-# UndoContext — one entry on the global undo stack (mirrors OFS UndoContext)
+# UndoContext  --  one entry on the global undo stack (mirrors OFS UndoContext)
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -231,7 +231,7 @@ class UndoContext:
 
 
 # ---------------------------------------------------------------------------
-# UndoSystem — global undo/redo coordinator (mirrors OFS UndoSystem)
+# UndoSystem  --  global undo/redo coordinator (mirrors OFS UndoSystem)
 # ---------------------------------------------------------------------------
 
 class UndoSystem:
@@ -273,7 +273,7 @@ class UndoSystem:
             A single Funscript or a list of Funscripts whose data should be
             captured.
         clear_redo:
-            When True (default) the redo stack is cleared — this is the
+            When True (default) the redo stack is cleared  --  this is the
             expected behaviour after every user-initiated edit.
         """
         if not isinstance(scripts, list):
@@ -390,9 +390,9 @@ class UndoSystem:
         Build the undo/redo history list for the UI panel. Mirrors ``UndoSystem::HistoryItems``.
 
         Each dict has keys:
-            ``label``   – human-readable description
-            ``count``   – how many consecutive identical entries are collapsed
-            ``is_redo`` – True if this entry is on the redo stack
+            ``label``   - human-readable description
+            ``count``   - how many consecutive identical entries are collapsed
+            ``is_redo`` - True if this entry is on the redo stack
         """
         items: list[dict] = []
 

@@ -3,7 +3,7 @@
 Mirrors editing operations from ``OpenFunscripter.cpp`` (Copy, Paste, Cut,
 Equalize, Invert, Isolate, RepeatStroke, Undo, Redo, etc.).
 
-Mixin class — must be listed **before** the main class in the MRO so that
+Mixin class  --  must be listed **before** the main class in the MRO so that
 ``super()`` chains correctly, but in practice the methods here only call
 ``self.<attr>`` so MRO order does not matter.
 """
@@ -31,9 +31,9 @@ class EditingCommandsMixin:
     IDE autocompletion / type-checking still works.
     """
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Editing operations (mirrors OFS methods)
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def _active(self: "OpenFunscripter") -> Optional[Funscript]:
         return self.project.active_script
@@ -178,7 +178,7 @@ class EditingCommandsMixin:
             s.EqualizeSelection()
 
     def InvertSelection(self: "OpenFunscripter") -> None:
-        """Invert positions of selected actions (100−pos). Mirrors ``OpenFunscripter::InvertSelection``."""
+        """Invert positions of selected actions (100-pos). Mirrors ``OpenFunscripter::InvertSelection``."""
         s = self._active()
         if not s:
             return
@@ -243,9 +243,9 @@ class EditingCommandsMixin:
             self.undo_system.Snapshot(StateType.BOTTOM_POINTS_ONLY, s)
             s.SelectBottomActions()
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Undo / Redo
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def Undo(self: "OpenFunscripter") -> None:
         """Undo the last edit. Mirrors ``OpenFunscripter::Undo``."""
@@ -259,9 +259,9 @@ class EditingCommandsMixin:
             self.scripting.Redo()
         self.status |= OFS_Status.GRADIENT_NEEDS_UPDATE
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
     # Heatmap / move-action helpers
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def SaveHeatmap(self: "OpenFunscripter", path: str, width: int = 1280,
                      height: int = 100, with_chapters: bool = False) -> None:
@@ -269,7 +269,7 @@ class EditingCommandsMixin:
 
         Mirrors OFS saveHeatmap(path, width, height, withChapters).
         with_chapters=True adds a chapter colour strip above the heatmap
-        (total height = 2×height).
+        (total height = 2xheight).
         """
         chapters = None
         if with_chapters:

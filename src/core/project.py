@@ -1,5 +1,5 @@
 """
-OFS_Project — Python port of OFS_Project.h / OFS_Project.cpp
+OFS_Project  --  Python port of OFS_Project.h / OFS_Project.cpp
 
 Manages:
   - A list of Funscript objects (multi-axis support)
@@ -34,7 +34,7 @@ log = logging.getLogger(__name__)
 PROJECT_EXTENSION = ".ofsp"
 
 # Formats supported by mpv (via libav/ffmpeg) on macOS and Linux.
-# .wmv/.wma/.asf excluded — Windows Media formats rarely used outside Windows.
+# .wmv/.wma/.asf excluded  --  Windows Media formats rarely used outside Windows.
 VIDEO_EXTENSIONS: frozenset[str] = frozenset({
     # Common containers
     ".mp4", ".mkv", ".webm", ".avi",
@@ -65,7 +65,7 @@ AUDIO_EXTENSIONS: frozenset[str] = frozenset({
 
 MEDIA_EXTENSIONS: frozenset[str] = VIDEO_EXTENSIONS | AUDIO_EXTENSIONS
 
-# Multi-axis axes reordering (OFS preference — roll/pitch/twist last → first)
+# Multi-axis axes reordering (OFS preference  --  roll/pitch/twist last -> first)
 _MULTIAXIS_ORDER = [".twist.funscript", ".pitch.funscript", ".roll.funscript"]
 
 
@@ -91,7 +91,7 @@ def _find_media_for_script(script_path: str) -> Optional[str]:
 def _find_related_scripts(root_path: str) -> List[str]:
     """
     Discover multi-axis funscripts adjacent to root_path.
-    E.g. video.funscript → video.twist.funscript, video.pitch.funscript …
+    E.g. video.funscript -> video.twist.funscript, video.pitch.funscript ...
 
     Returns paths sorted to place roll/pitch/twist at the front (OFS convention).
     """
@@ -124,7 +124,7 @@ def _find_related_scripts(root_path: str) -> List[str]:
 
 
 # ---------------------------------------------------------------------------
-# ProjectState — mirrors OFS ProjectState struct
+# ProjectState  --  mirrors OFS ProjectState struct
 # ---------------------------------------------------------------------------
 
 class ProjectState:
@@ -163,7 +163,7 @@ class ProjectState:
 
 class OFS_Project:
     """
-    Manages the loaded project — a collection of Funscripts associated with
+    Manages the loaded project  --  a collection of Funscripts associated with
     one media file.  Mirrors OFS OFS_Project class.
 
     Typical workflow::
@@ -199,7 +199,7 @@ class OFS_Project:
         # Shared metadata (from first funscript, OFS convention)
         self.metadata: FunscriptMetadata = FunscriptMetadata()
 
-        # Extra state (chapters, bookmarks, etc.) — arbitrary JSON dict
+        # Extra state (chapters, bookmarks, etc.)  --  arbitrary JSON dict
         self._extra_state: dict = {}
 
         # Change-notification callbacks
@@ -290,7 +290,7 @@ class OFS_Project:
             # Ensure at least one empty script slot
             self.funscripts.append(self._make_empty_script(""))
 
-        # Extra state (chapters, bookmarks, …)
+        # Extra state (chapters, bookmarks, ...)
         self._extra_state = doc.get("extraState", {})
 
         self._valid = True
@@ -330,7 +330,7 @@ class OFS_Project:
             log.info(f"Imported from funscript: {path}, media: {media}")
         else:
             self._add_error("Could not auto-detect media file.")
-            # Still allow the project to be used — media can be set later
+            # Still allow the project to be used  --  media can be set later
             self._valid = True
             log.warning(f"No media found for {path}; project partially valid.")
 
@@ -340,8 +340,8 @@ class OFS_Project:
         """Create a project from a media file.
 
         Only loads *existing* funscripts that live alongside the media.
-        Does **not** auto-create an empty funscript — the user adds scripts
-        manually via the DAW timeline (right-click → Add axis).
+        Does **not** auto-create an empty funscript  --  the user adds scripts
+        manually via the DAW timeline (right-click -> Add axis).
         """
         if self._valid:
             log.warning("Project already loaded.")
@@ -455,7 +455,7 @@ class OFS_Project:
                 out_path = self._make_path_absolute(script.relative_path)
 
             if not out_path:
-                log.warning(f"Script {i} has no path — skipping export.")
+                log.warning(f"Script {i} has no path - skipping export.")
                 continue
 
             if script.Save(out_path):
@@ -617,7 +617,7 @@ class OFS_Project:
             project_dir = Path(self._path).parent
             return str(Path(abs_path).relative_to(project_dir))
         except ValueError:
-            return abs_path  # different drive / not relative — keep absolute
+            return abs_path  # different drive / not relative  --  keep absolute
 
     def _make_path_absolute(self, rel_path: str) -> str:
         if not rel_path:

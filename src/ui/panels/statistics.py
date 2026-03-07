@@ -1,12 +1,12 @@
 """
-StatisticsWindow — Python port of OFS_Statistics.h / OFS_Statistics.cpp
+StatisticsWindow  --  Python port of OFS_Statistics.h / OFS_Statistics.cpp
 
 Displays per-funscript statistics:
-  • Total / selected action count
-  • Average / max speed
-  • Average / max position
-  • Actions per minute
-  • Selection duration
+  * Total / selected action count
+  * Average / max speed
+  * Average / max position
+  * Actions per minute
+  * Selection duration
 """
 
 from __future__ import annotations
@@ -83,7 +83,7 @@ class StatisticsWindow:
         pos_sum = sum(a.pos for a in script.actions)
         return hash((id(script), n_all, n_sel, pos_sum))
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ----------------------------------------------------------------------
 
     def Show(
         self,
@@ -97,7 +97,7 @@ class StatisticsWindow:
 
         current_time = player.CurrentTime()  # seconds
 
-        # ── Real-time stats at cursor (mirrors OFS ShowStatisticsWindow) ──
+        # -- Real-time stats at cursor (mirrors OFS ShowStatisticsWindow) --
         front = script.GetActionAtTime(current_time, 0.001)
         if front is not None:
             behind = script.GetPreviousActionBehind(front.at / 1000.0)
