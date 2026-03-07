@@ -130,9 +130,9 @@ class DeviceBackend(abc.ABC):
 # ===========================================================================
 
 # Key memory addresses (from mk312/constants.py)
-_MK_LEVEL_A   = 0x4064   # channel A intensity
-_MK_LEVEL_B   = 0x4065   # channel B intensity
-_MK_LEVEL_MA  = 0x4070   # multi-adjust value
+_MK_LEVEL_A   = 0x4064   # channel A level pot
+_MK_LEVEL_B   = 0x4065   # channel B level pot
+_MK_LEVEL_MA  = 0x420D   # multi-adjust (RAM_SENSE_MULTI_ADJUST)
 _MK_KEY_ADDR  = 0x4213   # encryption key register
 _MK_ADC_DIS   = 0x400F   # ADC disable flags
 _MK_MODE      = 0x407B   # current mode register
@@ -140,59 +140,68 @@ _MK_MODE      = 0x407B   # current mode register
 # Dynamic axis name -> (register_address, value_max) mapping.
 # The routing matrix sends 0-100 float; we scale to 0..value_max.
 # Core axes always written; extended axes written only when present.
+# Register addresses verified against zHappy/src/core/mk312/constants.py
+# which is the authoritative ET-312 / MK-312 memory map.
 _MK312_AXIS_MAP: Dict[str, Tuple[int, int]] = {
-    # Core axes (always written by the background writer)
-    "channel_a":      (0x4064, 255),
-    "channel_b":      (0x4065, 255),
-    "ma":             (0x4070, 255),
-    # Mode (integer value, not scaled)
-    "current_mode":   (0x407B, 255),
-    # Channel A parameters
-    "a_ramp_value":   (0x409C, 255),
-    "a_ramp_min":     (0x409D, 255),
-    "a_ramp_max":     (0x409E, 255),
-    "a_ramp_rate":    (0x409F, 255),
-    "a_gate_value":   (0x40A5, 255),
-    "a_gate_ontime":  (0x40A8, 255),
-    "a_gate_offtime": (0x40A9, 255),
-    "a_gate_select":  (0x40AA, 255),
-    "a_freq_value":   (0x40AE, 255),
-    "a_freq_min":     (0x40AC, 255),
-    "a_freq_max":     (0x40AD, 255),
-    "a_freq_rate":    (0x40AF, 255),
-    "a_width_value":  (0x40B4, 255),
-    "a_width_min":    (0x40B2, 255),
-    "a_width_max":    (0x40B3, 255),
-    "a_width_rate":   (0x40B5, 255),
-    "a_intensity":    (0x40C0, 255),
-    "a_intensity_min":(0x40C2, 255),
-    "a_intensity_max":(0x40C3, 255),
-    "a_intensity_rate":(0x40C4, 255),
-    # Channel B parameters
-    "b_ramp_value":   (0x41A0, 255),
-    "b_ramp_min":     (0x41A1, 255),
-    "b_ramp_max":     (0x41A2, 255),
-    "b_ramp_rate":    (0x41A3, 255),
-    "b_gate_value":   (0x41A9, 255),
-    "b_gate_ontime":  (0x41AC, 255),
-    "b_gate_offtime": (0x41AD, 255),
-    "b_gate_select":  (0x41AE, 255),
-    "b_freq_value":   (0x41B2, 255),
-    "b_freq_min":     (0x41B0, 255),
-    "b_freq_max":     (0x41B1, 255),
-    "b_freq_rate":    (0x41B3, 255),
-    "b_width_value":  (0x41B8, 255),
-    "b_width_min":    (0x41B6, 255),
-    "b_width_max":    (0x41B7, 255),
-    "b_width_rate":   (0x41B9, 255),
-    "b_intensity":    (0x41C4, 255),
-    "b_intensity_min":(0x41C6, 255),
-    "b_intensity_max":(0x41C7, 255),
-    "b_intensity_rate":(0x41C8, 255),
-    # Advanced / panel
-    "ramp_select":    (0x4014, 255),
-    "ramp_level":     (0x4086, 255),
-    "power_level":    (0x4062, 255),
+    # ── Core levels ──────────────────────────────────────────────────
+    "channel_a":       (0x4064, 255),  # RAM_SENSE_LEVEL_POT_A
+    "channel_b":       (0x4065, 255),  # RAM_SENSE_LEVEL_POT_B
+    "ma":              (0x420D, 255),  # RAM_SENSE_MULTI_ADJUST
+    "current_mode":    (0x407B, 255),  # RAM_CURRENT_MODE
+    # ── Channel A: Gate ──────────────────────────────────────────────
+    "a_gate_value":    (0x4090, 255),  # RAM_CHANNEL_A_GATE_VALUE
+    "a_gate_ontime":   (0x4098, 255),  # RAM_CHANNEL_A_GATE_ON_TIME
+    "a_gate_offtime":  (0x4099, 255),  # RAM_CHANNEL_A_GATE_OFF_TIME
+    "a_gate_select":   (0x409A, 255),  # RAM_CHANNEL_A_GATE_SELECT
+    # ── Channel A: Ramp ──────────────────────────────────────────────
+    "a_ramp_value":    (0x409C, 255),  # RAM_CHANNEL_A_RAMP_VALUE
+    "a_ramp_min":      (0x409D, 255),  # RAM_CHANNEL_A_RAMP_MIN
+    "a_ramp_max":      (0x409E, 255),  # RAM_CHANNEL_A_RAMP_MAX
+    "a_ramp_rate":     (0x409F, 255),  # RAM_CHANNEL_A_RAMP_RATE
+    # ── Channel A: Intensity ─────────────────────────────────────────
+    "a_intensity":     (0x40A5, 255),  # RAM_CHANNEL_A_INTENSITY
+    "a_intensity_min": (0x40A6, 255),  # RAM_CHANNEL_A_INTENSITY_MIN
+    "a_intensity_max": (0x40A7, 255),  # RAM_CHANNEL_A_INTENSITY_MAX
+    "a_intensity_rate":(0x40A8, 255),  # RAM_CHANNEL_A_INTENSITY_RATE
+    # ── Channel A: Frequency ─────────────────────────────────────────
+    "a_freq_value":    (0x40AE, 255),  # RAM_CHANNEL_A_FREQUENCY
+    "a_freq_min":      (0x40AF, 255),  # RAM_CHANNEL_A_FREQUENCY_MIN
+    "a_freq_max":      (0x40B0, 255),  # RAM_CHANNEL_A_FREQUENCY_MAX
+    "a_freq_rate":     (0x40B1, 255),  # RAM_CHANNEL_A_FREQUENCY_RATE
+    # ── Channel A: Width ─────────────────────────────────────────────
+    "a_width_value":   (0x40B7, 255),  # RAM_CHANNEL_A_WIDTH
+    "a_width_min":     (0x40B8, 255),  # RAM_CHANNEL_A_WIDTH_MIN
+    "a_width_max":     (0x40B9, 255),  # RAM_CHANNEL_A_WIDTH_MAX
+    "a_width_rate":    (0x40BA, 255),  # RAM_CHANNEL_A_WIDTH_RATE
+    # ── Channel B: Gate ──────────────────────────────────────────────
+    "b_gate_value":    (0x4190, 255),  # RAM_CHANNEL_B_GATE_VALUE
+    "b_gate_ontime":   (0x4198, 255),  # RAM_CHANNEL_B_GATE_ON_TIME
+    "b_gate_offtime":  (0x4199, 255),  # RAM_CHANNEL_B_GATE_OFF_TIME
+    "b_gate_select":   (0x419A, 255),  # RAM_CHANNEL_B_GATE_SELECT
+    # ── Channel B: Ramp ──────────────────────────────────────────────
+    "b_ramp_value":    (0x419C, 255),  # RAM_CHANNEL_B_RAMP_VALUE
+    "b_ramp_min":      (0x419D, 255),  # RAM_CHANNEL_B_RAMP_MIN
+    "b_ramp_max":      (0x419E, 255),  # RAM_CHANNEL_B_RAMP_MAX
+    "b_ramp_rate":     (0x419F, 255),  # RAM_CHANNEL_B_RAMP_RATE
+    # ── Channel B: Intensity ─────────────────────────────────────────
+    "b_intensity":     (0x41A5, 255),  # RAM_CHANNEL_B_INTENSITY
+    "b_intensity_min": (0x41A6, 255),  # RAM_CHANNEL_B_INTENSITY_MIN
+    "b_intensity_max": (0x41A7, 255),  # RAM_CHANNEL_B_INTENSITY_MAX
+    "b_intensity_rate":(0x41A8, 255),  # RAM_CHANNEL_B_INTENSITY_RATE
+    # ── Channel B: Frequency ─────────────────────────────────────────
+    "b_freq_value":    (0x41AE, 255),  # RAM_CHANNEL_B_FREQUENCY
+    "b_freq_min":      (0x41AF, 255),  # RAM_CHANNEL_B_FREQUENCY_MIN
+    "b_freq_max":      (0x41B0, 255),  # RAM_CHANNEL_B_FREQUENCY_MAX
+    "b_freq_rate":     (0x41B1, 255),  # RAM_CHANNEL_B_FREQUENCY_RATE
+    # ── Channel B: Width ─────────────────────────────────────────────
+    "b_width_value":   (0x41B7, 255),  # RAM_CHANNEL_B_WIDTH
+    "b_width_min":     (0x41B8, 255),  # RAM_CHANNEL_B_WIDTH_MIN
+    "b_width_max":     (0x41B9, 255),  # RAM_CHANNEL_B_WIDTH_MAX
+    "b_width_rate":    (0x41BA, 255),  # RAM_CHANNEL_B_WIDTH_RATE
+    # ── Advanced / Panel ─────────────────────────────────────────────
+    "ramp_select":     (0x40A3, 255),  # RAM_CHANNEL_A_RAMP_SELECT
+    "ramp_level":      (0x41F8, 255),  # RAM_ADVANCED_RAMP_LEVEL
+    "power_level":     (0x41F4, 255),  # RAM_POWER_LEVEL
 }
 
 
@@ -228,8 +237,8 @@ class MK312Backend(DeviceBackend):
     - 19200 baud, 8N1, no flow control
     - XOR-encrypted packet framing with checksum
     - Key exchange handshake on connect
-    - Channel A/B intensity: 0-255 at addresses 0x4064/0x4065
-    - Multi-adjust: 0-255 at address 0x4070
+    - Channel A/B level: 0-255 at addresses 0x4064/0x4065
+    - Multi-adjust: 0-255 at address 0x420D
 
     Writer architecture (priority-based dirty-tracking)
     ---------------------------------------------------

@@ -52,7 +52,7 @@ _MK312_REGISTERS: List[Tuple[str, int, str, int, int, str]] = [
     # -- Channel A / B intensity ------------------------------------
     ("A Level (intensity)",     0x4064, "int",  0, 255, "Channel A output level"),
     ("B Level (intensity)",     0x4065, "int",  0, 255, "Channel B output level"),
-    ("Multi-Adjust",            0x4070, "int",  0, 255, "Multi-adjust knob value"),
+    ("Multi-Adjust",            0x420D, "int",  0, 255, "Multi-adjust knob value"),
     # -- Mode -------------------------------------------------------
     ("Current Mode",            0x407B, "mode", 0, 255, "Operating mode register"),
     ("Top Mode",                0x41F3, "mode", 0, 255, "Highest selectable mode"),
