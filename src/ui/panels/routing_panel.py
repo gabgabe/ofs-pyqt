@@ -124,6 +124,9 @@ class RoutingPanel:
         # OSC config popup
         self._osc_cfg_open: bool = False
         self._osc_cfg_fields: Dict[str, str] = {}
+        # WS Output config popup
+        self._ws_cfg_open: bool = False
+        self._ws_cfg_fields: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Main draw
@@ -166,6 +169,7 @@ class RoutingPanel:
         self._draw_add_device_popup(routing, device_mgr)
         self._draw_device_config_popup(routing, device_mgr)
         self._draw_osc_config_popup(device_mgr)
+        self._draw_ws_output_config_popup(device_mgr)
         self._draw_channel_tree_popup(routing, device_mgr)
 
     # ------------------------------------------------------------------
@@ -283,9 +287,36 @@ class RoutingPanel:
                     imgui.same_line()
                     imgui.text_disabled(f"({n_ch} ch)")
                 imgui.pop_id()
+                # Each device on its own row — no same_line()
+
+        # -- WS Output toggle (always shown when device_mgr available) --
+        if device_mgr:
+            imgui.spacing()
+            ws_on = device_mgr.ws_output_enabled
+            imgui.push_style_color(imgui.Col_.text,
+                                   _COL_DEV_ONLINE if ws_on else _COL_DEV_OFFLINE)
+            imgui.bullet()
+            imgui.same_line()
+            imgui.text("WS Output")
+            imgui.pop_style_color()
+            imgui.same_line()
+            if ws_on:
+                if imgui.small_button("Disable WS"):
+                    device_mgr.disable_ws_output()
+            else:
+                if imgui.small_button("Enable WS"):
+                    device_mgr.enable_ws_output()
+            imgui.same_line()
+            if imgui.small_button("WS Settings"):
+                self._ws_cfg_open = True
+                cfg = device_mgr.ws_output_config
+                self._ws_cfg_fields = {k: str(v) for k, v in cfg.params.items()}
+            if ws_on:
                 imgui.same_line()
-                imgui.spacing()
-                imgui.same_line()
+                ws_be = device_mgr.ws_output_backend
+                if ws_be:
+                    n_clients = getattr(ws_be, 'client_count', 0)
+                    imgui.text_disabled(f"({n_clients} client{'s' if n_clients != 1 else ''})")
 
         # -- OSC toggle (always shown when device_mgr available) -------
         if device_mgr:
@@ -719,6 +750,24 @@ class RoutingPanel:
         "ButtplugBackend": [
             ("server", "Intiface URL", "ws://127.0.0.1:12345", "str"),
         ],
+        "PiShockSerialBackend": [
+            ("device",      "Serial Port",  "",                      "port"),
+            ("baudrate",    "Baud Rate",    "",                      "baudrate"),
+            ("shocker_id",  "Shocker ID",   "From PiShock hub",      "int"),
+            ("model",       "RF Model",     "1=CaiXianlin 2=Petrainer 3=998DR", "int"),
+            ("duration_ms", "Duration (ms)", "300\u201365535",              "int"),
+        ],
+        "OSSMBLEBackend": [
+            ("address",     "BLE Address",   "Leave blank for auto-scan", "str"),
+            ("interval_ms", "Interval (ms)", "10\u2013500 (default 16)",        "int"),
+        ],
+        "WSOutputBackend": [
+            ("host",       "Bind Address", "0.0.0.0 = all interfaces", "str"),
+            ("port",       "Port",        "WebSocket port",      "int"),
+            ("format",     "Format",      "json / tcode / tcode_mfp", "str"),
+            ("update_hz",  "Update Hz",   "1\u2013120 (default 60)",       "int"),
+            ("dirty_only", "Dirty Only",  "Send only changed axes", "bool"),
+        ],
     }
 
     _BACKEND_FIELD_DEFAULTS: Dict[str, Dict[str, Any]] = {
@@ -728,6 +777,13 @@ class RoutingPanel:
                                "target_id": "", "v3": True},
         "DGLabBLEBackend":    {"address": "", "limit_a": 200, "limit_b": 200},
         "ButtplugBackend":    {"server": "ws://127.0.0.1:12345"},
+        "PiShockSerialBackend": {"device": "/dev/cu.usbserial",
+                                 "baudrate": 115200, "shocker_id": 0,
+                                 "model": 1, "duration_ms": 1000},
+        "OSSMBLEBackend":       {"address": "", "interval_ms": 16},
+        "WSOutputBackend":      {"host": "0.0.0.0", "port": 8082,
+                                 "format": "json", "update_hz": 60,
+                                 "dirty_only": True},
     }
 
     _BAUD_RATES = [
@@ -967,6 +1023,42 @@ class RoutingPanel:
                         imgui.text_colored(ImVec4(1, 0.8, 0.2, 1),
                                            "\u23f3 Waiting for APP bind\u2026")
 
+        # -- PiShock safety warning ------------------------------------
+        if inst.model_id == "pishock":
+            imgui.spacing()
+            imgui.separator()
+            imgui.spacing()
+            imgui.text_colored(ImVec4(1.0, 0.5, 0.0, 1.0),
+                               "\u26a0 SAFETY LIMITS:")
+            imgui.text("  \u2022 Max intensity: 100")
+            imgui.text("  \u2022 Min duration: 300 ms")
+            imgui.text("  \u2022 Max command rate: 4 Hz (250 ms)")
+            imgui.text("  \u2022 Deadman switch: Stop after 2 s silence")
+            if selected_cls == "PiShockSerialBackend":
+                imgui.text_disabled("Limits enforced in backend + firmware")
+            else:
+                imgui.text_disabled("WiFi bridge: limits enforced in ESP firmware")
+
+        # -- OSSM BLE live info ----------------------------------------
+        if selected_cls == "OSSMBLEBackend" and connected:
+            backend = device_mgr.get_backend(self._cfg_dev_id)
+            if backend and hasattr(backend, "state"):
+                imgui.spacing()
+                imgui.separator()
+                imgui.spacing()
+                state = backend.state
+                if state == "streaming":
+                    imgui.text_colored(ImVec4(0.2, 0.85, 0.45, 1),
+                                       "\u25b6 Streaming")
+                elif state == "idle":
+                    imgui.text_colored(ImVec4(0.8, 0.8, 0.3, 1),
+                                       "\u23f8 Idle")
+                elif state == "homing":
+                    imgui.text_colored(ImVec4(0.5, 0.7, 1.0, 1),
+                                       "\u2302 Homing...")
+                else:
+                    imgui.text_disabled(f"State: {state}")
+
         # -- Error display ---------------------------------------------
         err = device_mgr.last_error(self._cfg_dev_id)
         if err:
@@ -1166,6 +1258,135 @@ class RoutingPanel:
             imgui.close_current_popup()
         imgui.same_line()
         if imgui.button("Cancel##osc_c", ImVec2(90, 0)):
+            imgui.close_current_popup()
+
+        imgui.end_popup()
+
+    # ------------------------------------------------------------------
+    # WS Output config popup (modal)
+    # ------------------------------------------------------------------
+
+    _WS_FORMATS = ["json", "tcode", "tcode_mfp"]
+
+    def _draw_ws_output_config_popup(self, device_mgr: "DeviceManager | None") -> None:
+        if not device_mgr:
+            return
+
+        if self._ws_cfg_open:
+            self._ws_cfg_open = False
+            imgui.open_popup("WS Output Settings###ws_cfg_modal")
+
+        vp = imgui.get_main_viewport()
+        imgui.set_next_window_pos(
+            ImVec2(vp.work_pos.x + vp.work_size.x * 0.5,
+                   vp.work_pos.y + vp.work_size.y * 0.5),
+            imgui.Cond_.appearing, ImVec2(0.5, 0.5))
+        imgui.set_next_window_size(ImVec2(400, 0), imgui.Cond_.appearing)
+        imgui.set_next_window_size_constraints(ImVec2(320, 0), ImVec2(460, 500))
+
+        visible = imgui.begin_popup_modal(
+            "WS Output Settings###ws_cfg_modal", None,
+            imgui.WindowFlags_.none)[0]
+        if not visible:
+            return
+
+        _FW = 240.0
+
+        # -- Header ----------------------------------------------------
+        imgui.text("WebSocket Output Server")
+        imgui.same_line(imgui.get_content_region_avail().x - 55)
+        if device_mgr.ws_output_enabled:
+            imgui.text_colored(_COL_DEV_ONLINE, "Active")
+        else:
+            imgui.text_colored(_COL_DEV_OFFLINE, "Inactive")
+        imgui.text_disabled("Broadcasts OFS WS axes to connected clients")
+        imgui.separator()
+        imgui.spacing()
+
+        # -- Fields ----------------------------------------------------
+        imgui.text("Bind Address:")
+        imgui.set_next_item_width(_FW)
+        ch, v = imgui.input_text("##ws_host",
+                                  self._ws_cfg_fields.get("host", "0.0.0.0"),
+                                  128)
+        if ch:
+            self._ws_cfg_fields["host"] = v
+        imgui.text_disabled("0.0.0.0 = all interfaces")
+
+        imgui.text("Port:")
+        imgui.set_next_item_width(120)
+        ch, v = imgui.input_text("##ws_port",
+                                  self._ws_cfg_fields.get("port", "8082"), 16)
+        if ch:
+            self._ws_cfg_fields["port"] = v
+
+        imgui.text("Format:")
+        imgui.set_next_item_width(_FW)
+        cur_fmt = self._ws_cfg_fields.get("format", "json")
+        fmt_idx = 0
+        for i, f in enumerate(self._WS_FORMATS):
+            if f == cur_fmt:
+                fmt_idx = i
+                break
+        ch_fmt, new_fmt_idx = imgui.combo("##ws_fmt", fmt_idx, self._WS_FORMATS)
+        if ch_fmt:
+            self._ws_cfg_fields["format"] = self._WS_FORMATS[new_fmt_idx]
+        imgui.text_disabled("json = OFS native  /  tcode = TCode string  /  tcode_mfp = MultiFunPlayer")
+
+        imgui.text("Update Hz:")
+        imgui.set_next_item_width(120)
+        ch, v = imgui.input_text("##ws_hz",
+                                  self._ws_cfg_fields.get("update_hz", "60"), 16)
+        if ch:
+            self._ws_cfg_fields["update_hz"] = v
+        imgui.same_line()
+        imgui.text_disabled("1\u2013120")
+
+        dirty_val = self._ws_cfg_fields.get("dirty_only", "True")
+        is_dirty = dirty_val.lower() in ("true", "1", "yes")
+        ch_d, is_dirty = imgui.checkbox("Dirty Only (send only changed axes)", is_dirty)
+        if ch_d:
+            self._ws_cfg_fields["dirty_only"] = str(is_dirty)
+
+        # -- Client count ----------------------------------------------
+        if device_mgr.ws_output_enabled:
+            ws_be = device_mgr.ws_output_backend
+            if ws_be:
+                n_clients = getattr(ws_be, 'client_count', 0)
+                imgui.spacing()
+                imgui.text_disabled(
+                    f"Connected clients: {n_clients}")
+
+        # -- Buttons ---------------------------------------------------
+        imgui.spacing()
+        imgui.separator()
+        imgui.spacing()
+
+        if imgui.button("Apply##ws", ImVec2(90, 0)):
+            try:
+                port_val = int(self._ws_cfg_fields.get("port", "8082"))
+            except ValueError:
+                port_val = 8082
+            try:
+                hz_val = int(self._ws_cfg_fields.get("update_hz", "60"))
+            except ValueError:
+                hz_val = 60
+            dirty_str = self._ws_cfg_fields.get("dirty_only", "True")
+            dirty_bool = dirty_str.lower() in ("true", "1", "yes")
+            device_mgr.ws_output_config.params.update({
+                "host":      self._ws_cfg_fields.get("host", "0.0.0.0"),
+                "port":      port_val,
+                "format":    self._ws_cfg_fields.get("format", "json"),
+                "update_hz": hz_val,
+                "dirty_only": dirty_bool,
+            })
+            # Restart if running
+            if device_mgr.ws_output_enabled:
+                device_mgr.disable_ws_output()
+                device_mgr.enable_ws_output()
+            imgui.close_current_popup()
+        imgui.same_line()
+        if imgui.button("Cancel##ws_c", ImVec2(90, 0)):
             imgui.close_current_popup()
 
         imgui.end_popup()

@@ -1,0 +1,9 @@
+# Ignore PlatformIO build artifacts
+.pio/
+.vscode/
+lib/
+include/
+
+# OS
+.DS_Store
+Thumbs.db

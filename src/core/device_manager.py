@@ -26,6 +26,8 @@ from src.core.backends import (
     DGLabSocketBackend,
     DGLabBLEBackend,
     ButtplugBackend,
+    PiShockSerialBackend,
+    OSSMBLEBackend,
     OSCOutputBackend,
     WSOutputBackend,
     create_backend,
@@ -70,6 +72,11 @@ _DEFAULT_PARAMS: Dict[str, Dict[str, Any]] = {
     "dg_lab_coyote":  {"ws_url": "wss://ws.dungeon-lab.cn/", "target_id": "", "v3": False},
     "dg_lab_coyote3": {"ws_url": "wss://ws.dungeon-lab.cn/", "target_id": "", "v3": True},
     "buttplug_generic": {"server": "ws://127.0.0.1:12345"},
+    "pishock":        {"device": "/dev/cu.usbserial", "baudrate": 115200,
+                       "shocker_id": 0, "model": 1, "duration_ms": 1000},
+    "ossm":           {"address": "", "interval_ms": 16},
+    "esp_gpio":       {"host": "0.0.0.0", "port": 8082, "format": "json",
+                       "update_hz": 60, "dirty_only": True},
 }
 
 
@@ -85,6 +92,14 @@ class DeviceManager:
         # Non-device backends
         self._osc: Optional[OSCOutputBackend] = None
         self._ws_outs: Dict[str, WSOutputBackend] = {}  # ws output instance id -> backend
+
+        # Native WS Output server (singleton, broadcasts OFS WS axes)
+        self._ws_output: Optional[WSOutputBackend] = None
+        self._ws_output_config = ConnectionConfig(params={
+            "host": "0.0.0.0", "port": 8082, "format": "json",
+            "update_hz": 60, "dirty_only": True,
+        })
+        self._ws_output_enabled = False
 
         # Global OSC config
         self._osc_config = ConnectionConfig(params={
@@ -211,6 +226,49 @@ class DeviceManager:
         return self._osc_config
 
     # ------------------------------------------------------------------
+    # Native WS Output lifecycle
+    # ------------------------------------------------------------------
+
+    def enable_ws_output(self) -> bool:
+        """Start the native WS output server."""
+        if self._ws_output and self._ws_output.is_connected:
+            return True
+        self._ws_output = WSOutputBackend("ws_output_native", "ws_output", "WS Output")
+        ok = self._ws_output.connect(**self._ws_output_config.params)
+        self._ws_output_enabled = ok
+        if ok:
+            log.info("[DeviceManager] WS Output enabled on %s:%s (%s)",
+                     self._ws_output_config.params.get('host', '0.0.0.0'),
+                     self._ws_output_config.params.get('port', 8082),
+                     self._ws_output_config.params.get('format', 'json'))
+        else:
+            log.warning("[DeviceManager] WS Output failed to start: %s",
+                        self._ws_output.last_error if self._ws_output else 'unknown')
+        return ok
+
+    def disable_ws_output(self) -> None:
+        """Stop the native WS output server."""
+        if self._ws_output:
+            self._ws_output.disconnect()
+        self._ws_output = None
+        self._ws_output_enabled = False
+        log.info("[DeviceManager] WS Output disabled")
+
+    @property
+    def ws_output_enabled(self) -> bool:
+        return (self._ws_output_enabled
+                and self._ws_output is not None
+                and self._ws_output.is_connected)
+
+    @property
+    def ws_output_config(self) -> ConnectionConfig:
+        return self._ws_output_config
+
+    @property
+    def ws_output_backend(self) -> Optional[WSOutputBackend]:
+        return self._ws_output
+
+    # ------------------------------------------------------------------
     # WS Output lifecycle
     # ------------------------------------------------------------------
 
@@ -226,7 +284,7 @@ class DeviceManager:
             backend.disconnect()
 
     def connect_ws_output(self, instance_id: str,
-                          host: str = "localhost", port: int = 8082,
+                          host: str = "0.0.0.0", port: int = 8082,
                           format: str = "json") -> bool:
         backend = self._ws_outs.get(instance_id)
         if not backend:
@@ -291,6 +349,10 @@ class DeviceManager:
         if self._osc and self._osc.is_connected and osc_vals:
             self._osc.push_values(osc_vals)
 
+        # Push to native WS output (same OFS WS axes)
+        if self._ws_output and self._ws_output.is_connected and osc_vals:
+            self._ws_output.push_values(osc_vals)
+
         # Push to WS output backends
         for ws_id, axes in ws_out_groups.items():
             backend = self._ws_outs.get(ws_id)
@@ -350,6 +412,13 @@ class DeviceManager:
                 pass
         self._osc = None
 
+        if self._ws_output and self._ws_output.is_connected:
+            try:
+                self._ws_output.disconnect()
+            except Exception:
+                pass
+        self._ws_output = None
+
     # ------------------------------------------------------------------
     # Serialization
     # ------------------------------------------------------------------
@@ -367,11 +436,19 @@ class DeviceManager:
             "backend_classes": backend_classes,
             "osc_config": self._osc_config.to_dict(),
             "osc_enabled": self._osc_enabled,
+            "ws_output_config": self._ws_output_config.to_dict(),
+            "ws_output_enabled": self._ws_output_enabled,
         }
 
     def from_dict(self, d: dict) -> None:
         for inst_id, cfg_d in d.get("configs", {}).items():
             self._configs[inst_id] = ConnectionConfig.from_dict(cfg_d)
+        # ── Migration: localhost → 0.0.0.0 for WS backends ──────────
+        # Old defaults bound to loopback only; ESP on LAN couldn't reach.
+        for cfg in self._configs.values():
+            if cfg.params.get("host") == "localhost" and "port" in cfg.params:
+                cfg.params["host"] = "0.0.0.0"
+                log.info("[DeviceManager] migrated WS host localhost → 0.0.0.0")
         # Store saved backend class names  --  applied after sync_with_routing
         self._saved_backend_classes: Dict[str, str] = d.get("backend_classes", {})
         osc_d = d.get("osc_config")
@@ -379,6 +456,12 @@ class DeviceManager:
             self._osc_config = ConnectionConfig.from_dict(osc_d)
         if d.get("osc_enabled", False):
             self.enable_osc()
+        # Restore native WS output
+        ws_d = d.get("ws_output_config")
+        if ws_d:
+            self._ws_output_config = ConnectionConfig.from_dict(ws_d)
+        if d.get("ws_output_enabled", False):
+            self.enable_ws_output()
 
     def apply_saved_backend_classes(self, routing: RoutingMatrix) -> None:
         """Swap backends to match saved class selections (call after sync)."""
@@ -386,11 +469,14 @@ class DeviceManager:
         if not saved:
             return
         _CLASS_LOOKUP = {
-            "MK312Backend":       MK312Backend,
-            "TCodeBackend":       TCodeBackend,
-            "DGLabSocketBackend": DGLabSocketBackend,
-            "DGLabBLEBackend":    DGLabBLEBackend,
-            "ButtplugBackend":    ButtplugBackend,
+            "MK312Backend":          MK312Backend,
+            "TCodeBackend":          TCodeBackend,
+            "DGLabSocketBackend":    DGLabSocketBackend,
+            "DGLabBLEBackend":       DGLabBLEBackend,
+            "ButtplugBackend":       ButtplugBackend,
+            "PiShockSerialBackend":  PiShockSerialBackend,
+            "OSSMBLEBackend":        OSSMBLEBackend,
+            "WSOutputBackend":       WSOutputBackend,
         }
         for inst_id, cls_name in saved.items():
             inst = routing.devices.get(inst_id)

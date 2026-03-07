@@ -1233,23 +1233,38 @@ class WSOutputBackend(DeviceBackend):
     """Custom WebSocket output  --  broadcasts axis values to connected clients.
 
     Runs a WebSocket server on a configurable port. Clients connect and
-    receive JSON messages: ``{"type":"axis","axes":{"stroke":50.0,...}}``.
-    Also supports the zHappy format: ``A06260 B10000`` etc.
+    receive axis values in one of three formats:
+
+    - ``json``      : ``{"type":"axis","axes":{"stroke":50.0,...}}``
+    - ``tcode``     : ``L05000 R07500``   (TCode v0.3, no interval)
+    - ``tcode_mfp`` : ``L05000I16 R07500I16\\n``  (MFP-compatible with interval)
+
+    Supports dirty-value tracking (only changed axes are sent) and
+    configurable update rate.
     """
 
     def __init__(self, instance_id: str, model_id: str = "ws_output",
                  name: str = "WS Output") -> None:
         super().__init__(instance_id, model_id, name)
-        self._host = "localhost"
+        self._host = "0.0.0.0"
         self._port = 8082
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._server = None
         self._clients: set = set()
-        self._format = "json"  # "json" or "tcode"
+        self._format = "json"  # "json", "tcode", or "tcode_mfp"
         self._latest: Dict[str, float] = {}
+        self._last_sent: Dict[str, float] = {}  # dirty-tracking
+        self._dirty_only: bool = True
+        self._update_interval: float = 0.016  # seconds (~60 Hz)
 
-    def connect(self, host: str = "localhost", port: int = 8082,
-                format: str = "json", **kwargs) -> bool:
+    @property
+    def client_count(self) -> int:
+        """Number of currently connected WebSocket clients."""
+        return len(self._clients)
+
+    def connect(self, host: str = "0.0.0.0", port: int = 8082,
+                format: str = "json", update_hz: int = 60,
+                dirty_only: bool = True, **kwargs) -> bool:
         try:
             import websockets  # noqa: F401
         except ImportError:
@@ -1259,6 +1274,9 @@ class WSOutputBackend(DeviceBackend):
         self._host = host
         self._port = port
         self._format = format
+        self._dirty_only = dirty_only
+        self._update_interval = 1.0 / max(1, update_hz)
+        self._last_sent.clear()
         self._loop = asyncio.new_event_loop()
         self._stop.clear()
         self._thread = threading.Thread(
@@ -1283,14 +1301,26 @@ class WSOutputBackend(DeviceBackend):
                 if self._queue:
                     vals = self._queue.pop()
                     self._queue.clear()
-                    self._latest = vals
-                    await self._broadcast(vals)
-                await asyncio.sleep(0.016)  # ~60 Hz
+                    self._latest.update(vals)
+                    to_send = self._filter_dirty(vals) if self._dirty_only else vals
+                    if to_send:
+                        await self._broadcast(to_send)
+                await asyncio.sleep(self._update_interval)
+
+    def _filter_dirty(self, vals: Dict[str, float]) -> Dict[str, float]:
+        """Return only axes whose rounded value actually changed."""
+        dirty: Dict[str, float] = {}
+        for k, v in vals.items():
+            rounded = round(v, 1)  # 0.1% resolution
+            if rounded != self._last_sent.get(k):
+                dirty[k] = v
+                self._last_sent[k] = rounded
+        return dirty
 
     async def _handler(self, ws, path=None) -> None:
         self._clients.add(ws)
         try:
-            # Send current state on connect
+            # Send full current state on connect (not dirty-filtered)
             if self._latest:
                 msg = self._format_msg(self._latest)
                 await ws.send(msg)
@@ -1312,8 +1342,17 @@ class WSOutputBackend(DeviceBackend):
         self._clients -= dead
 
     def _format_msg(self, vals: Dict[str, float]) -> str:
-        if self._format == "tcode":
-            # zHappy-compatible: "A06260 B10000"
+        if self._format == "tcode_mfp":
+            # MFP-compatible TCode with interval suffix + newline
+            interval_ms = max(1, int(self._update_interval * 1000))
+            parts = []
+            for axis, val in vals.items():
+                tcode = _TCODE_AXES.get(axis, axis[:2].upper())
+                ival = int(max(0, min(9999, val * 99.99)))
+                parts.append(f"{tcode}{ival:04d}I{interval_ms}")
+            return " ".join(parts) + "\n"
+        elif self._format == "tcode":
+            # TCode v0.3 without interval suffix
             parts = []
             for axis, val in vals.items():
                 tcode = _TCODE_AXES.get(axis, axis[:2].upper())
@@ -1321,6 +1360,7 @@ class WSOutputBackend(DeviceBackend):
                 parts.append(f"{tcode}{ival:04d}")
             return " ".join(parts)
         else:
+            # JSON (default)
             return json.dumps({"type": "axis", "axes": {
                 k: round(v, 2) for k, v in vals.items()
             }})
@@ -1333,6 +1373,400 @@ class WSOutputBackend(DeviceBackend):
             self._loop.call_soon_threadsafe(self._loop.stop)
         self._server = None
         self._clients.clear()
+
+
+# ===========================================================================
+# PiShock / OpenShock  --  serial UART to hub (rftransmit JSON)
+# ===========================================================================
+
+# Safety-critical hard limits
+_PISHOCK_MIN_CMD_INTERVAL_S = 0.250   # max 4 commands / second
+_PISHOCK_DEADMAN_TIMEOUT_S  = 2.0     # send Stop if no data for 2s
+_PISHOCK_MAX_INTENSITY      = 100
+_PISHOCK_MIN_DURATION_MS    = 300     # protocol minimum
+_PISHOCK_DEFAULT_DURATION   = 1000    # 1 second per pulse
+
+# OpenShock command types
+_PISHOCK_CMD_STOP    = 0
+_PISHOCK_CMD_SHOCK   = 1
+_PISHOCK_CMD_VIBRATE = 2
+_PISHOCK_CMD_BEEP    = 3
+
+# OpenShock shocker model IDs
+_PISHOCK_MODEL_CAIXIANLIN    = 1
+_PISHOCK_MODEL_PETRAINER     = 2
+_PISHOCK_MODEL_PETRAINER998  = 3
+
+
+class PiShockSerialBackend(DeviceBackend):
+    """PiShock / OpenShock hub via serial UART.
+
+    Protocol
+    --------
+    - 115200 baud, 8N1
+    - Command: ``rftransmit <json>\\n``
+    - JSON: ``{"model":<int>,"id":<int>,"type":<0-3>,"intensity":<0-100>,"durationMs":<300-65535>}``
+    - Response: ``$SYS$|Response|<json>``
+
+    Safety
+    ------
+    - Rate-limited to 4 Hz (250ms between commands)
+    - Deadman switch: sends Stop if no data for 2 seconds
+    - Hard intensity cap at 100
+    - Minimum duration 300ms (protocol requirement)
+    """
+
+    def __init__(self, instance_id: str, model_id: str = "pishock",
+                 name: str = "PiShock") -> None:
+        super().__init__(instance_id, model_id, name)
+        self._port = None            # serial.Serial
+        self._shocker_id: int = 0
+        self._model: int = _PISHOCK_MODEL_CAIXIANLIN
+        self._duration_ms: int = _PISHOCK_DEFAULT_DURATION
+        self._last_cmd_time: float = 0.0
+        self._last_data_time: float = 0.0
+        self._last_cmd_type: int = _PISHOCK_CMD_STOP
+
+    def connect(self, device: str = "/dev/cu.usbserial",
+                baudrate: int = 115200,
+                shocker_id: int = 0,
+                model: int = 1,
+                duration_ms: int = 1000,
+                **kwargs) -> bool:
+        try:
+            import serial
+        except ImportError:
+            self._error = "pyserial not installed"
+            return False
+        if shocker_id <= 0:
+            self._error = "shocker_id must be set (see PiShock hub)"
+            return False
+        try:
+            self._port = serial.Serial(device, baudrate=baudrate, timeout=0.1)
+            if not self._port.is_open:
+                self._port.open()
+            self._shocker_id = shocker_id
+            self._model = max(1, min(3, model))
+            self._duration_ms = max(_PISHOCK_MIN_DURATION_MS,
+                                    min(65535, duration_ms))
+            self._last_data_time = time.monotonic()
+            self._connected = True
+            self._start_writer(interval_s=0.050)  # 20 Hz poll, rate-limited inside
+            log.info(f"[{self.name}] connected on {device}, "
+                     f"shocker={self._shocker_id} model={self._model}")
+            return True
+        except Exception as exc:
+            self._error = str(exc)
+            log.error(f"[{self.name}] connect failed: {exc}")
+            return False
+
+    def _do_close(self) -> None:
+        # Send a final Stop on disconnect
+        if self._port and self._port.is_open:
+            try:
+                self._send_rftransmit(_PISHOCK_CMD_STOP, 0)
+            except Exception:
+                pass
+            self._port.close()
+        self._port = None
+
+    def _do_write(self, axis_values: Dict[str, float]) -> None:
+        if not self._port or not self._port.is_open:
+            return
+
+        now = time.monotonic()
+        self._last_data_time = now
+
+        # Rate limiting: enforce minimum interval between commands
+        if (now - self._last_cmd_time) < _PISHOCK_MIN_CMD_INTERVAL_S:
+            return
+
+        shock = axis_values.get("shock_intensity", 0.0)
+        vibrate = axis_values.get("vibrate_intensity", 0.0)
+        beep = axis_values.get("beep", 0.0)
+
+        # Priority: shock > vibrate > beep > stop
+        if shock > 1.0:
+            cmd_type = _PISHOCK_CMD_SHOCK
+            intensity = int(min(_PISHOCK_MAX_INTENSITY, shock))
+        elif vibrate > 1.0:
+            cmd_type = _PISHOCK_CMD_VIBRATE
+            intensity = int(min(_PISHOCK_MAX_INTENSITY, vibrate))
+        elif beep > 50.0:
+            cmd_type = _PISHOCK_CMD_BEEP
+            intensity = 50  # beep doesn't really use intensity
+        else:
+            # All zero -> send Stop (but only once, don't spam)
+            if self._last_cmd_type != _PISHOCK_CMD_STOP:
+                self._send_rftransmit(_PISHOCK_CMD_STOP, 0)
+                self._last_cmd_type = _PISHOCK_CMD_STOP
+                self._last_cmd_time = now
+            return
+
+        self._send_rftransmit(cmd_type, intensity)
+        self._last_cmd_type = cmd_type
+        self._last_cmd_time = now
+
+    def _send_rftransmit(self, cmd_type: int, intensity: int) -> None:
+        """Send an rftransmit command to the OpenShock hub."""
+        payload = json.dumps({
+            "model": self._model,
+            "id": self._shocker_id,
+            "type": cmd_type,
+            "intensity": max(0, min(_PISHOCK_MAX_INTENSITY, intensity)),
+            "durationMs": self._duration_ms,
+        })
+        cmd = f"rftransmit {payload}\n"
+        try:
+            self._port.write(cmd.encode("ascii"))
+            log.debug(f"[{self.name}] TX: {cmd.strip()}")
+        except Exception as exc:
+            self._error = str(exc)
+            log.error(f"[{self.name}] serial write error: {exc}")
+
+    def _writer_loop(self, interval_s: float = 0.050) -> None:
+        """Override: add deadman switch check to the writer loop."""
+        while not self._stop.is_set():
+            now = time.monotonic()
+
+            # Deadman switch: if no data received for timeout, send Stop
+            if (now - self._last_data_time) > _PISHOCK_DEADMAN_TIMEOUT_S:
+                if self._last_cmd_type != _PISHOCK_CMD_STOP:
+                    try:
+                        self._send_rftransmit(_PISHOCK_CMD_STOP, 0)
+                        self._last_cmd_type = _PISHOCK_CMD_STOP
+                        log.warning(f"[{self.name}] deadman: STOP sent "
+                                    f"(no data for {_PISHOCK_DEADMAN_TIMEOUT_S}s)")
+                    except Exception:
+                        pass
+
+            # Normal queue drain
+            if self._queue:
+                try:
+                    vals = self._queue.pop()
+                    self._queue.clear()
+                    self._do_write(vals)
+                except Exception as exc:
+                    self._error = str(exc)
+                    log.error(f"[{self.name}] write error: {exc}")
+
+            self._stop.wait(interval_s)
+
+
+# ===========================================================================
+# OSSM (Open Source Sex Machine)  --  direct BLE via bleak
+# ===========================================================================
+
+# OSSM BLE UUIDs (KinkyMakers firmware)
+_OSSM_SERVICE_UUID   = "522b443a-4f53-534d-0001-420badbabe69"
+_OSSM_CMD_CHAR_UUID  = "522b443a-4f53-534d-0001-000000001000"   # write commands
+_OSSM_STATE_CHAR_UUID = "522b443a-4f53-534d-0001-000000002000"  # state notify
+
+# OSSM command strings (see KinkyMakers/OSSM-hardware)
+_OSSM_CMD_STREAMING  = "go:streaming"
+_OSSM_CMD_STOP       = "go:stop"
+_OSSM_CMD_HOMING     = "go:homing"
+
+# Safety limits
+_OSSM_MIN_INTERVAL_MS = 10    # minimum interval between BLE writes
+_OSSM_MAX_INTERVAL_MS = 500
+_OSSM_DEFAULT_INTERVAL_MS = 16  # ~62.5 Hz, matches MFP FixedUpdate
+
+
+class OSSMBLEBackend(DeviceBackend):
+    """OSSM (Open Source Sex Machine) via direct BLE using *bleak*.
+
+    Protocol (KinkyMakers firmware)
+    --------------------------------
+    - Service UUID: ``522b443a-4f53-534d-0001-420badbabe69``
+    - Command characteristic: ``...1000``  (write-without-response)
+    - State characteristic: ``...2000``    (notify: ``idle`` / ``streaming`` / etc.)
+
+    Commands::
+
+        go:streaming          Enter streaming mode
+        go:stop               Stop motor, return to idle
+        go:homing             Run homing sequence
+        stream:<pos>:<time>   Set target position (0-100) over <time> ms
+
+    The backend enters streaming mode on connect, then sends
+    ``stream:<pos>:<time_ms>`` at the configured interval (~62.5 Hz).
+
+    Axis mapping:
+    - ``stroke``    → position (0-100) sent via ``stream:`` command
+    - ``speed``     → stored but not independently controllable in streaming mode
+    - ``depth``     → scales the stroke range (min/max position limits)
+    - ``sensation`` → currently unused (future: pattern selection)
+    """
+
+    def __init__(self, instance_id: str, model_id: str = "ossm",
+                 name: str = "OSSM BLE") -> None:
+        super().__init__(instance_id, model_id, name)
+        self._client = None           # bleak.BleakClient
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._device_addr: str = ""
+        self._interval_ms: int = _OSSM_DEFAULT_INTERVAL_MS
+        self._state: str = "unknown"  # last reported firmware state
+        self._depth_pct: float = 100.0  # depth scaling (0-100)
+        self._last_pos: float = 50.0
+
+    def connect(self, address: str = "",
+                interval_ms: int = _OSSM_DEFAULT_INTERVAL_MS,
+                **kwargs) -> bool:
+        """Connect via BLE.  *address* is a MAC/UUID (blank = auto-scan)."""
+        try:
+            import bleak  # noqa: F401
+        except ImportError:
+            self._error = "bleak not installed (pip install bleak)"
+            return False
+
+        self._device_addr = address
+        self._interval_ms = max(_OSSM_MIN_INTERVAL_MS,
+                                min(_OSSM_MAX_INTERVAL_MS, interval_ms))
+
+        self._loop = asyncio.new_event_loop()
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self._run_loop, daemon=True,
+            name=f"OSSM-BLE-{self.name}")
+        self._thread.start()
+
+        # Wait for connection with timeout
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and not self._connected:
+            time.sleep(0.05)
+        return self._connected
+
+    def _run_loop(self) -> None:
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_until_complete(self._ble_task())
+
+    async def _ble_task(self) -> None:
+        import bleak
+
+        # Scan for OSSM if no address given
+        addr = self._device_addr
+        if not addr:
+            log.info(f"[{self.name}] scanning for OSSM BLE device...")
+            devices = await bleak.BleakScanner.discover(
+                timeout=6.0,
+                service_uuids=[_OSSM_SERVICE_UUID],
+            )
+            for d in devices:
+                if d.name and ("OSSM" in d.name.upper() or "STROKER" in d.name.upper()):
+                    addr = d.address
+                    log.info(f"[{self.name}] found {d.name} at {addr}")
+                    break
+            # Fallback: any device advertising the OSSM service
+            if not addr and devices:
+                addr = devices[0].address
+                log.info(f"[{self.name}] found OSSM service at {addr}")
+            if not addr:
+                self._error = "No OSSM device found via BLE scan"
+                log.warning(self._error)
+                return
+
+        try:
+            client = bleak.BleakClient(addr, timeout=10.0)
+            await client.connect()
+            self._client = client
+            self._connected = True
+            log.info(f"[{self.name}] BLE connected to {addr}")
+
+            # Subscribe to state notifications
+            try:
+                await client.start_notify(
+                    _OSSM_STATE_CHAR_UUID, self._on_state_notify)
+            except Exception as exc:
+                log.debug(f"[{self.name}] state notify not available: {exc}")
+
+            # Enter streaming mode
+            await client.write_gatt_char(
+                _OSSM_CMD_CHAR_UUID,
+                _OSSM_CMD_STREAMING.encode(),
+                response=False,
+            )
+            self._state = "streaming"
+            log.info(f"[{self.name}] entered streaming mode "
+                     f"(interval={self._interval_ms}ms)")
+
+            # Main streaming loop
+            interval_s = self._interval_ms / 1000.0
+            while not self._stop.is_set():
+                if self._queue:
+                    vals = self._queue.pop()
+                    self._queue.clear()
+                    await self._send_stream(client, vals)
+                else:
+                    # Keep-alive: resend last position
+                    await self._send_stream(client, {})
+                await asyncio.sleep(interval_s)
+
+            # Clean exit: stop motor
+            try:
+                await client.write_gatt_char(
+                    _OSSM_CMD_CHAR_UUID,
+                    _OSSM_CMD_STOP.encode(),
+                    response=False,
+                )
+            except Exception:
+                pass
+
+        except Exception as exc:
+            self._error = str(exc)
+            log.error(f"[{self.name}] BLE error: {exc}")
+        finally:
+            self._connected = False
+            if self._client and self._client.is_connected:
+                try:
+                    await self._client.disconnect()
+                except Exception:
+                    pass
+            self._client = None
+
+    async def _send_stream(self, client, axis_values: Dict[str, float]) -> None:
+        """Send a ``stream:<pos>:<time_ms>`` command via BLE."""
+        stroke = axis_values.get("stroke", self._last_pos)
+        depth = axis_values.get("depth", self._depth_pct)
+
+        # Scale stroke by depth: depth=100 means full range,
+        # depth=50 means half range centred around 50
+        self._depth_pct = max(0.0, min(100.0, depth))
+        half_range = self._depth_pct / 2.0
+        center = 50.0
+        pos = center + (stroke - 50.0) * (half_range / 50.0)
+        pos = max(0.0, min(100.0, pos))
+        self._last_pos = stroke
+
+        cmd = f"stream:{int(pos)}:{self._interval_ms}"
+        try:
+            await client.write_gatt_char(
+                _OSSM_CMD_CHAR_UUID, cmd.encode(), response=False)
+        except Exception as exc:
+            self._error = str(exc)
+            log.error(f"[{self.name}] BLE write error: {exc}")
+
+    def _on_state_notify(self, _sender, data: bytearray) -> None:
+        """Handle state characteristic notifications."""
+        try:
+            state = data.decode("utf-8").strip()
+            self._state = state
+            log.debug(f"[{self.name}] state: {state}")
+        except Exception:
+            pass
+
+    @property
+    def state(self) -> str:
+        """Current firmware state (idle/streaming/homing/error)."""
+        return self._state
+
+    def _do_write(self, axis_values: Dict[str, float]) -> None:
+        pass  # handled by async BLE task
+
+    def _do_close(self) -> None:
+        if self._loop:
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        self._client = None
 
 
 # ===========================================================================
@@ -1630,12 +2064,20 @@ _BACKEND_MAP: Dict[str, type] = {
     "dg_lab_coyote":   DGLabSocketBackend,
     "dg_lab_coyote3":  DGLabSocketBackend,
     "buttplug_generic": ButtplugBackend,
+    "pishock":         PiShockSerialBackend,
+    "ossm":            OSSMBLEBackend,    # Direct BLE (WiFi bridge as alternative)
+    "esp_gpio":        WSOutputBackend,    # always WiFi bridge
 }
 
 # Alternate backend classes selectable per-instance
 BACKEND_ALTERNATIVES: Dict[str, List[Tuple[str, type]]] = {
     "dg_lab_coyote":  [("WebSocket Relay", DGLabSocketBackend), ("Direct BLE", DGLabBLEBackend)],
     "dg_lab_coyote3": [("WebSocket Relay", DGLabSocketBackend), ("Direct BLE", DGLabBLEBackend)],
+    "pishock":        [("Serial (direct to hub)", PiShockSerialBackend),
+                       ("WiFi Bridge (via ESP)", WSOutputBackend)],
+    "ossm":           [("Direct BLE", OSSMBLEBackend),
+                       ("WiFi Bridge (via ESP)", WSOutputBackend)],
+    "esp_gpio":       [("WiFi Bridge (via ESP)", WSOutputBackend)],
 }
 
 

@@ -351,6 +351,85 @@ _register(DeviceModel(
 ))
 
 
+# -- PiShock / OpenShock (RF shock collar controller) ----------------------
+_register(DeviceModel(
+    model_id="pishock",
+    label="PiShock / OpenShock",
+    manufacturer="OpenShock",
+    protocol="serial",
+    description="RF shock collar controller (shock, vibrate, beep) via serial or WiFi bridge",
+    axes=[
+        AxisDef("shock_intensity",   "Shock Intensity",   AxisKind.INTENSITY,
+                range_min=0, range_max=100, default=0),
+        AxisDef("vibrate_intensity", "Vibrate Intensity", AxisKind.INTENSITY,
+                range_min=0, range_max=100, default=0),
+        AxisDef("beep",              "Beep",              AxisKind.TOGGLE,
+                range_min=0, range_max=100, default=0),
+    ],
+    channel_tree=[
+        ("Shock",   "shock_intensity",   None),
+        ("Vibrate", "vibrate_intensity", None),
+        ("Beep",    "beep",              None),
+    ],
+))
+
+# -- OSSM (Open Source Sex Machine) ----------------------------------------
+_register(DeviceModel(
+    model_id="ossm",
+    label="OSSM (Stroker)",
+    manufacturer="KinkyMakers / R&D",
+    protocol="ble",
+    description="Open Source Sex Machine — real-time position streaming via BLE or WiFi bridge",
+    axes=[
+        AxisDef("stroke",    "Stroke Position", AxisKind.POSITION,
+                range_min=0, range_max=100, default=50),
+        AxisDef("speed",     "Speed",           AxisKind.INTENSITY,
+                range_min=0, range_max=100, default=0),
+        AxisDef("depth",     "Depth",           AxisKind.INTENSITY,
+                range_min=0, range_max=100, default=50),
+        AxisDef("sensation", "Sensation",       AxisKind.INTENSITY,
+                range_min=0, range_max=100, default=50),
+    ],
+    channel_tree=[
+        ("Stroke Position", "stroke",    None),
+        ("Speed",           "speed",     None),
+        ("Depth",           "depth",     None),
+        ("Sensation",       "sensation", None),
+    ],
+))
+
+# -- ESP GPIO Bridge (generic WiFi-controlled outputs) ---------------------
+_register(DeviceModel(
+    model_id="esp_gpio",
+    label="ESP GPIO Bridge",
+    manufacturer="Custom",
+    protocol="ws_bridge",
+    description="ESP8266/32 over WiFi — servo, MOSFET PWM, relay outputs via WebSocket",
+    axes=[
+        AxisDef("servo_1",  "Servo 1",  AxisKind.POSITION),
+        AxisDef("servo_2",  "Servo 2",  AxisKind.POSITION),
+        AxisDef("pwm_1",    "PWM 1",    AxisKind.INTENSITY),
+        AxisDef("pwm_2",    "PWM 2",    AxisKind.INTENSITY),
+        AxisDef("relay_1",  "Relay 1",  AxisKind.TOGGLE),
+        AxisDef("relay_2",  "Relay 2",  AxisKind.TOGGLE),
+    ],
+    channel_tree=[
+        ("Servos", None, [
+            ("Servo 1", "servo_1", None),
+            ("Servo 2", "servo_2", None),
+        ]),
+        ("PWM", None, [
+            ("PWM 1", "pwm_1", None),
+            ("PWM 2", "pwm_2", None),
+        ]),
+        ("Relays", None, [
+            ("Relay 1", "relay_1", None),
+            ("Relay 2", "relay_2", None),
+        ]),
+    ],
+))
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
