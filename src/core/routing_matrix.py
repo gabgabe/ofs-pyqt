@@ -441,19 +441,23 @@ class RoutingMatrix:
 
     def add_device_instance(self, model_id: str,
                             name: str = "",
-                            axes: List[str] | None = None) -> Optional[DeviceInstance]:
+                            axes: List[str] | None = None,
+                            instance_id: str = "") -> Optional[DeviceInstance]:
         """Instantiate a device from the catalogue.
 
         If *axes* is ``None`` the device is created with **no** output
         nodes -- the user adds channels individually via the tree menu.
         Pass a list of axis names to pre-populate specific channels.
+
+        *instance_id* -- if provided, reuse this ID (for persistence);
+        otherwise a fresh UUID is generated.
         """
         model = DEVICE_CATALOGUE.get(model_id)
         if not model:
             log.warning(f"Unknown device model: {model_id}")
             return None
         inst = DeviceInstance(
-            id=uuid.uuid4().hex[:12],
+            id=instance_id or uuid.uuid4().hex[:12],
             model_id=model_id,
             name=name or model.label,
         )
@@ -746,14 +750,17 @@ class RoutingMatrix:
                             axis_name=ax, group=f"WS Out: {inst.name}",
                         )
 
-        # Devices -- restore only the channels that were saved
+        # Devices -- restore only the channels that were saved,
+        # preserving the original instance ID so that links and cue
+        # params (which reference the ID) survive the round-trip.
         for dd in d.get("devices", []):
             inst = DeviceInstance.from_dict(dd)
             channels = dd.get("channels", [])
-            if inst.id not in self.devices:
+            if inst.id and inst.id not in self.devices:
                 self.add_device_instance(
                     inst.model_id, inst.name,
-                    axes=channels if channels else None)
+                    axes=channels if channels else None,
+                    instance_id=inst.id)
 
         # Links
         for ld in d.get("links", []):

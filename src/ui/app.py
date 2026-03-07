@@ -471,7 +471,7 @@ class OpenFunscripter(EditingCommandsMixin, KeybindingsMixin, MenuBarMixin):
             self.routing.Process(self.timeline_mgr.CurrentTime())
             self.device_mgr.Dispatch(self.routing)
         except Exception as exc:
-            log.error(f"RoutingMatrix.Process() error: {exc}")
+            log.error(f"RoutingMatrix.Process() error: {exc}", exc_info=True)
 
         # Idle detection: any player playing -> not idle
         any_playing = self.timeline_mgr.AnyPlayerPlaying() or (

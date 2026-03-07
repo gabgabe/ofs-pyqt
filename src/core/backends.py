@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import enum
 import json
 import logging
 import struct
@@ -195,16 +196,62 @@ _MK312_AXIS_MAP: Dict[str, Tuple[int, int]] = {
 }
 
 
+# Priority tiers for MK312 register scheduling.
+# At 19200 baud each write+ACK ≈ 3.1 ms; with an 8 ms cycle we can
+# push 2 writes/cycle reliably.  HIGH-priority axes (the ones you
+# *feel* in real-time: levels and MA) always go first.  NORMAL
+# parameters round-robin when bandwidth is available.  LOW config
+# axes only fire when nothing else is dirty.
+
+class _MK312Prio(enum.IntEnum):
+    HIGH   = 0   # channel_a, channel_b, ma — real-time feel
+    NORMAL = 1   # frequency, intensity, width, gate, ramp values
+    LOW    = 2   # mode, power_level, ramp_select, config
+
+# Axis name → priority tier
+_MK312_AXIS_PRIO: Dict[str, _MK312Prio] = {
+    "channel_a":   _MK312Prio.HIGH,
+    "channel_b":   _MK312Prio.HIGH,
+    "ma":          _MK312Prio.HIGH,
+}
+# Everything else defaults to NORMAL; explicitly LOW axes:
+_MK312_LOW_AXES = {
+    "current_mode", "ramp_select", "ramp_level", "power_level",
+}
+
+
 class MK312Backend(DeviceBackend):
     """MK-312BT / ET-312B via RS232 serial.
 
-    Protocol:
+    Protocol
+    --------
     - 19200 baud, 8N1, no flow control
     - XOR-encrypted packet framing with checksum
     - Key exchange handshake on connect
     - Channel A/B intensity: 0-255 at addresses 0x4064/0x4065
     - Multi-adjust: 0-255 at address 0x4070
+
+    Writer architecture (priority-based dirty-tracking)
+    ---------------------------------------------------
+    Instead of writing *all* axes every frame (which overflows the
+    serial budget at 19200 baud), the backend:
+
+    1. ``push_values()`` merges incoming axis data into a per-register
+       dirty map with deduplication — only registers whose *scaled
+       hardware value* actually changed are marked dirty.
+    2. The writer thread wakes every ~4 ms and picks up to
+       ``_MAX_WRITES_PER_CYCLE`` dirty registers, processed in
+       priority order (HIGH → NORMAL → LOW).
+    3. Within each tier, axes are served round-robin so no single
+       axis starves.
+    4. Each write is a blocking ``_write_addr()`` (5-byte TX +
+       1-byte ACK ≈ 3.1 ms at 19200 baud).
     """
+
+    # How many register writes we attempt per cycle.  At 19200 baud
+    # each write+ACK ≈ 3.1 ms.  With a 4 ms sleep between cycles the
+    # real period is 4 + N*3.1 ms.  2 writes → ~10 ms → ~100 Hz.
+    _MAX_WRITES_PER_CYCLE = 2
 
     def __init__(self, instance_id: str, model_id: str = "mk312bt",
                  name: str = "MK-312BT") -> None:
@@ -212,6 +259,22 @@ class MK312Backend(DeviceBackend):
         self._port = None
         self._key: Optional[int] = None
         self._lock = threading.Lock()
+
+        # -- dirty-tracking state (accessed from both threads) ----------
+        self._dirty_lock = threading.Lock()
+        # axis_name → desired hw value (0-255). Set by push_values on
+        # the main thread, consumed by the writer thread.
+        self._dirty: Dict[str, int] = {}
+        # axis_name → last value successfully written to the box.
+        # Used to suppress redundant writes.
+        self._last_sent: Dict[str, int] = {}
+        # Per-tier round-robin index so we don't starve any axis.
+        self._rr_idx: Dict[_MK312Prio, int] = {
+            _MK312Prio.HIGH: 0, _MK312Prio.NORMAL: 0, _MK312Prio.LOW: 0,
+        }
+        # Stats (for debugging / UI)
+        self._writes_total: int = 0
+        self._writes_skipped: int = 0
 
     def connect(self, device: str = "/dev/cu.usbserial",
                 baudrate: int = 19200, **kwargs) -> bool:
@@ -288,7 +351,11 @@ class MK312Backend(DeviceBackend):
                 return False
 
             self._connected = True
-            self._start_writer(interval_s=0.008)  # ~125 Hz
+            # Clear dirty state from any previous session
+            with self._dirty_lock:
+                self._dirty.clear()
+                self._last_sent.clear()
+            self._start_mk312_writer()
             log.info(f"[{self.name}] connected on {device}, key=0x{self._key:02X}")
             return True
         except Exception as exc:
@@ -312,20 +379,162 @@ class MK312Backend(DeviceBackend):
                 self._port.close()
         self._port = None
 
-    def _do_write(self, axis_values: Dict[str, float]) -> None:
-        with self._lock:
-            if not self._port or not self._port.is_open:
-                return
-            # Write every axis present in axis_values using the register map
+    # -- push / write overrides (dirty-tracking) ----------------------
+
+    def push_values(self, axis_values: Dict[str, float]) -> None:
+        """Merge incoming axis data into the per-register dirty map.
+
+        Called once per frame on the **main thread**.  Only marks a
+        register dirty if the scaled hardware value actually changed
+        since the last successful write.
+        """
+        if not self._connected:
+            return
+        with self._dirty_lock:
             for axis_name, val_100 in axis_values.items():
                 mapping = _MK312_AXIS_MAP.get(axis_name)
                 if not mapping:
                     continue
-                reg_addr, val_max = mapping
-                # Scale 0-100 -> 0..val_max
+                _reg_addr, val_max = mapping
                 hw_val = int(val_100 / 100.0 * val_max)
                 hw_val = max(0, min(val_max, hw_val))
-                self._write_addr(reg_addr, hw_val)
+                # Only mark dirty if the value actually changed
+                if self._last_sent.get(axis_name) == hw_val:
+                    self._writes_skipped += 1
+                    continue
+                self._dirty[axis_name] = hw_val
+
+    def _do_write(self, axis_values: Dict[str, float]) -> None:
+        """Not used — MK312 overrides the writer loop entirely."""
+        pass  # pragma: no cover
+
+    @staticmethod
+    def _axis_priority(axis_name: str) -> _MK312Prio:
+        """Return the scheduling priority for an axis name."""
+        p = _MK312_AXIS_PRIO.get(axis_name)
+        if p is not None:
+            return p
+        if axis_name in _MK312_LOW_AXES:
+            return _MK312Prio.LOW
+        return _MK312Prio.NORMAL
+
+    def _start_mk312_writer(self) -> None:
+        """Start the priority-based writer thread."""
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self._mk312_writer_loop,
+            daemon=True,
+            name=f"DevOut-{self.name}",
+        )
+        self._thread.start()
+
+    def _mk312_writer_loop(self) -> None:
+        """Priority-based dirty-register writer.
+
+        Each cycle:
+        1. Snapshot & clear dirty map (under lock — fast).
+        2. Bucket dirty axes by priority tier.
+        3. For each tier (HIGH → LOW), pick up to budget via
+           round-robin, do blocking ``_write_addr`` + ACK.
+        4. Sleep remainder of cycle.
+
+        The budget is ``_MAX_WRITES_PER_CYCLE`` (default 2).  At
+        19200 baud with encrypted+ACK protocol each write ≈ 3.1 ms,
+        so 2 writes + 4 ms sleep ≈ 10 ms period → ~100 effective Hz.
+        """
+        SLEEP_S = 0.004  # 4 ms idle between cycles
+        budget = self._MAX_WRITES_PER_CYCLE
+        log.info(f"[{self.name}] writer started  budget={budget}/cycle")
+
+        while not self._stop.is_set():
+            # --- 1. snapshot & clear dirty set (fast, under lock) ------
+            with self._dirty_lock:
+                snapshot = dict(self._dirty) if self._dirty else None
+                if snapshot is not None:
+                    self._dirty.clear()
+
+            # Lock released — push_values() on main thread is never
+            # blocked during the (slow) serial writes below.
+
+            if snapshot is None:
+                self._stop.wait(SLEEP_S)
+                continue
+
+            # --- 2. bucket by priority ---------------------------------
+            buckets: Dict[_MK312Prio, List[str]] = {
+                _MK312Prio.HIGH: [],
+                _MK312Prio.NORMAL: [],
+                _MK312Prio.LOW: [],
+            }
+            for axis_name in snapshot:
+                buckets[self._axis_priority(axis_name)].append(axis_name)
+
+            # --- 3. process in priority order --------------------------
+            writes_left = budget
+            for prio in _MK312Prio:
+                axes = buckets[prio]
+                if not axes or writes_left <= 0:
+                    # Put un-served axes back into dirty for next cycle
+                    if axes and writes_left <= 0:
+                        with self._dirty_lock:
+                            for a in axes:
+                                if a not in self._dirty:
+                                    self._dirty[a] = snapshot[a]
+                    continue
+
+                # Round-robin start index
+                rr = self._rr_idx.get(prio, 0) % max(1, len(axes))
+                ordered = axes[rr:] + axes[:rr]
+
+                served = 0
+                for axis_name in ordered:
+                    if writes_left <= 0:
+                        break
+                    hw_val = snapshot[axis_name]
+                    mapping = _MK312_AXIS_MAP.get(axis_name)
+                    if not mapping:
+                        continue
+                    reg_addr, _val_max = mapping
+
+                    # --- 4. blocking write + ACK (serial lock) ---------
+                    with self._lock:
+                        if not self._port or not self._port.is_open:
+                            break
+                        ok = self._write_addr(reg_addr, hw_val)
+
+                    if ok:
+                        with self._dirty_lock:
+                            self._last_sent[axis_name] = hw_val
+                        self._writes_total += 1
+                        served += 1
+                    else:
+                        # Write failed — put back for retry next cycle
+                        with self._dirty_lock:
+                            if axis_name not in self._dirty:
+                                self._dirty[axis_name] = hw_val
+                        log.debug(f"[{self.name}] write failed "
+                                  f"{axis_name}=0x{hw_val:02X}, requeueing")
+                    writes_left -= 1
+
+                # Advance round-robin for this tier
+                self._rr_idx[prio] = (
+                    self._rr_idx.get(prio, 0) + served
+                )
+
+                # Put remaining un-served axes back into dirty
+                remaining = ordered[served:]
+                if remaining:
+                    with self._dirty_lock:
+                        for a in remaining:
+                            if a not in self._dirty:
+                                self._dirty[a] = snapshot[a]
+
+            # --- 5. sleep until next cycle ---
+            self._stop.wait(SLEEP_S)
+
+        log.info(f"[{self.name}] writer stopped  "
+                 f"total_writes={self._writes_total}  "
+                 f"skipped={self._writes_skipped}")
 
     def write_register(self, address: int, value: int) -> bool:
         """Direct register write (for cue engine). Thread-safe."""
