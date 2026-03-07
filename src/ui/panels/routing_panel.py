@@ -758,8 +758,10 @@ class RoutingPanel:
             ("duration_ms", "Duration (ms)", "300\u201365535",              "int"),
         ],
         "OSSMBLEBackend": [
-            ("address",     "BLE Address",   "Leave blank for auto-scan", "str"),
-            ("interval_ms", "Interval (ms)", "10\u2013500 (default 16)",        "int"),
+            ("address",     "BLE Address",   "Leave blank for auto-scan (advertises as 'setup')", "str"),
+            ("interval_ms", "Interval (ms)", "10\u2013500 (default 16, ~62 Hz)",          "int"),
+            ("mode",        "Mode",          "streaming / simplePenetration / strokeEngine", "str"),
+            ("use_fts",     "FTS Binary",    "Use 3-byte binary protocol (faster)", "bool"),
         ],
         "WSOutputBackend": [
             ("host",       "Bind Address", "0.0.0.0 = all interfaces", "str"),
@@ -780,7 +782,8 @@ class RoutingPanel:
         "PiShockSerialBackend": {"device": "/dev/cu.usbserial",
                                  "baudrate": 115200, "shocker_id": 0,
                                  "model": 1, "duration_ms": 1000},
-        "OSSMBLEBackend":       {"address": "", "interval_ms": 16},
+        "OSSMBLEBackend":       {"address": "", "interval_ms": 16,
+                                 "mode": "streaming", "use_fts": True},
         "WSOutputBackend":      {"host": "0.0.0.0", "port": 8082,
                                  "format": "json", "update_hz": 60,
                                  "dirty_only": True},
@@ -1047,17 +1050,39 @@ class RoutingPanel:
                 imgui.separator()
                 imgui.spacing()
                 state = backend.state
-                if state == "streaming":
+                # State with colour
+                if "idle" in state:
                     imgui.text_colored(ImVec4(0.2, 0.85, 0.45, 1),
-                                       "\u25b6 Streaming")
-                elif state == "idle":
-                    imgui.text_colored(ImVec4(0.8, 0.8, 0.3, 1),
-                                       "\u23f8 Idle")
-                elif state == "homing":
+                                       f"\u25b6 {state}")
+                elif "homing" in state:
                     imgui.text_colored(ImVec4(0.5, 0.7, 1.0, 1),
-                                       "\u2302 Homing...")
+                                       f"\u2302 {state}")
+                elif "error" in state:
+                    imgui.text_colored(ImVec4(1.0, 0.3, 0.3, 1),
+                                       f"\u26a0 {state}")
+                elif "preflight" in state:
+                    imgui.text_colored(ImVec4(0.9, 0.85, 0.3, 1),
+                                       f"\u23f3 {state}")
                 else:
                     imgui.text_disabled(f"State: {state}")
+                # FTS binary indicator
+                if hasattr(backend, "has_fts"):
+                    if backend.has_fts:
+                        imgui.text_disabled("\u2713 FTS binary protocol active")
+                    else:
+                        imgui.text_disabled("\u2717 FTS not available (using text stream)")
+                # Firmware params
+                if hasattr(backend, "firmware_params"):
+                    fw = backend.firmware_params
+                    if fw:
+                        imgui.text_disabled(
+                            f"FW: spd={fw.get('speed','-')}  "
+                            f"str={fw.get('stroke','-')}  "
+                            f"dep={fw.get('depth','-')}  "
+                            f"sen={fw.get('sensation','-')}  "
+                            f"pat={fw.get('pattern','-')}")
+                if hasattr(backend, "position_mm"):
+                    imgui.text_disabled(f"Position: {backend.position_mm:.1f} mm")
 
         # -- Error display ---------------------------------------------
         err = device_mgr.last_error(self._cfg_dev_id)

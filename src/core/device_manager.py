@@ -74,7 +74,8 @@ _DEFAULT_PARAMS: Dict[str, Dict[str, Any]] = {
     "buttplug_generic": {"server": "ws://127.0.0.1:12345"},
     "pishock":        {"device": "/dev/cu.usbserial", "baudrate": 115200,
                        "shocker_id": 0, "model": 1, "duration_ms": 1000},
-    "ossm":           {"address": "", "interval_ms": 16},
+    "ossm":           {"address": "", "interval_ms": 16,
+                       "mode": "streaming", "use_fts": True},
     "esp_gpio":       {"host": "0.0.0.0", "port": 8082, "format": "json",
                        "update_hz": 60, "dirty_only": True},
 }

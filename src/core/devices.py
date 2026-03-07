@@ -377,24 +377,34 @@ _register(DeviceModel(
 _register(DeviceModel(
     model_id="ossm",
     label="OSSM (Stroker)",
-    manufacturer="KinkyMakers / R&D",
+    manufacturer="KinkyMakers / Research & Desire",
     protocol="ble",
-    description="Open Source Sex Machine — real-time position streaming via BLE or WiFi bridge",
+    description="Open Source Sex Machine — BLE control (streaming / simplePenetration / strokeEngine)",
     axes=[
         AxisDef("stroke",    "Stroke Position", AxisKind.POSITION,
                 range_min=0, range_max=100, default=50),
         AxisDef("speed",     "Speed",           AxisKind.INTENSITY,
                 range_min=0, range_max=100, default=0),
         AxisDef("depth",     "Depth",           AxisKind.INTENSITY,
-                range_min=0, range_max=100, default=50),
+                range_min=0, range_max=100, default=10),
         AxisDef("sensation", "Sensation",       AxisKind.INTENSITY,
                 range_min=0, range_max=100, default=50),
+        AxisDef("buffer",    "Buffer",          AxisKind.INTENSITY,
+                range_min=0, range_max=100, default=100),
+        AxisDef("pattern",   "Pattern",         AxisKind.PATTERN,
+                range_min=0, range_max=6,   default=0),
     ],
     channel_tree=[
-        ("Stroke Position", "stroke",    None),
-        ("Speed",           "speed",     None),
-        ("Depth",           "depth",     None),
-        ("Sensation",       "sensation", None),
+        ("Streaming", None, [
+            ("Stroke Position", "stroke",    None),
+        ]),
+        ("Parameters", None, [
+            ("Speed",           "speed",     None),
+            ("Depth",           "depth",     None),
+            ("Sensation",       "sensation", None),
+            ("Buffer",          "buffer",    None),
+            ("Pattern (0-6)",   "pattern",   None),
+        ]),
     ],
 ))
 

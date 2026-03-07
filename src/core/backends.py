@@ -1556,48 +1556,73 @@ class PiShockSerialBackend(DeviceBackend):
 # ===========================================================================
 # OSSM (Open Source Sex Machine)  --  direct BLE via bleak
 # ===========================================================================
+#
+# Reference: OSSM firmware (KinkyMakers / Research & Desire)
+#   Service : 522b443a-4f53-534d-0001-420badbabe69
+#   Command : 522b443a-4f53-534d-1000-420badbabe69  (R/W/WNR)
+#   Speed Knob: 522b443a-4f53-534d-1010-420badbabe69  (R/W)
+#   State   : 522b443a-4f53-534d-2000-420badbabe69  (R/NOTIFY)
+#   Patterns: 522b443a-4f53-534d-3000-420badbabe69  (R)
+#   FTS Ctrl: 0000ffe1-0000-1000-8000-00805f9b34fb  (R/W/WNR/NOTIFY)
+#
+# Two streaming methods:
+#   A) Text:   write "stream:<pos 0-100>:<ms>" to Command char
+#   B) Binary: write 3 bytes [pos_u8(0-180), time_msb, time_lsb] to FTS char
+#              → pos is divided by 1.8 internally → 0-100%
+#
+# State notifications deliver JSON:
+#   {"state":"streaming.idle","speed":50,"stroke":75,...}
 
-# OSSM BLE UUIDs (KinkyMakers firmware)
-_OSSM_SERVICE_UUID   = "522b443a-4f53-534d-0001-420badbabe69"
-_OSSM_CMD_CHAR_UUID  = "522b443a-4f53-534d-0001-000000001000"   # write commands
-_OSSM_STATE_CHAR_UUID = "522b443a-4f53-534d-0001-000000002000"  # state notify
+_OSSM_SERVICE_UUID          = "522b443a-4f53-534d-0001-420badbabe69"
+_OSSM_CMD_CHAR_UUID         = "522b443a-4f53-534d-1000-420badbabe69"
+_OSSM_SPEED_KNOB_CHAR_UUID  = "522b443a-4f53-534d-1010-420badbabe69"
+_OSSM_STATE_CHAR_UUID       = "522b443a-4f53-534d-2000-420badbabe69"
+_OSSM_PATTERNS_CHAR_UUID    = "522b443a-4f53-534d-3000-420badbabe69"
+_OSSM_FTS_SERVICE_UUID      = "0000ffe0-0000-1000-8000-00805f9b34fb"
+_OSSM_FTS_CHAR_UUID         = "0000ffe1-0000-1000-8000-00805f9b34fb"
 
-# OSSM command strings (see KinkyMakers/OSSM-hardware)
-_OSSM_CMD_STREAMING  = "go:streaming"
-_OSSM_CMD_STOP       = "go:stop"
-_OSSM_CMD_HOMING     = "go:homing"
+# Commands (UTF-8 strings written to Command characteristic)
+_OSSM_CMD_STREAMING        = "go:streaming"
+_OSSM_CMD_SIMPLE           = "go:simplePenetration"
+_OSSM_CMD_STROKE_ENGINE    = "go:strokeEngine"
+_OSSM_CMD_MENU             = "go:menu"        # stop motor + return to menu
 
-# Safety limits
-_OSSM_MIN_INTERVAL_MS = 10    # minimum interval between BLE writes
+# Timing limits
+_OSSM_MIN_INTERVAL_MS = 10
 _OSSM_MAX_INTERVAL_MS = 500
-_OSSM_DEFAULT_INTERVAL_MS = 16  # ~62.5 Hz, matches MFP FixedUpdate
+_OSSM_DEFAULT_INTERVAL_MS = 16   # ~62.5 Hz
 
 
 class OSSMBLEBackend(DeviceBackend):
     """OSSM (Open Source Sex Machine) via direct BLE using *bleak*.
 
-    Protocol (KinkyMakers firmware)
-    --------------------------------
-    - Service UUID: ``522b443a-4f53-534d-0001-420badbabe69``
-    - Command characteristic: ``...1000``  (write-without-response)
-    - State characteristic: ``...2000``    (notify: ``idle`` / ``streaming`` / etc.)
+    Supports two operating modes selected by ``mode`` parameter:
 
-    Commands::
+    **streaming** (default)
+        Real-time position control.  ``stroke`` axis (0-100) is sent as
+        ``stream:<pos>:<time_ms>`` text commands or as 3-byte FTS binary
+        frames, depending on whether the FTS characteristic is available.
 
-        go:streaming          Enter streaming mode
-        go:stop               Stop motor, return to idle
-        go:homing             Run homing sequence
-        stream:<pos>:<time>   Set target position (0-100) over <time> ms
+    **simplePenetration**
+        Pattern-driven mode.  The firmware handles motion autonomously;
+        we send ``set:speed / set:stroke / set:depth / set:sensation /
+        set:pattern`` to adjust behaviour.
 
-    The backend enters streaming mode on connect, then sends
-    ``stream:<pos>:<time_ms>`` at the configured interval (~62.5 Hz).
+    In both modes the speed-knob config is set to ``"false"`` so that
+    BLE speed values are absolute (ignoring physical potentiometer).
 
-    Axis mapping:
-    - ``stroke``    → position (0-100) sent via ``stream:`` command
-    - ``speed``     → stored but not independently controllable in streaming mode
-    - ``depth``     → scales the stroke range (min/max position limits)
-    - ``sensation`` → currently unused (future: pattern selection)
+    Axis mapping
+    ~~~~~~~~~~~~
+    - ``stroke``    → position (streaming) or stroke length (simplePenetration)
+    - ``speed``     → motor speed (0=stop, 100=max)
+    - ``depth``     → depth offset
+    - ``sensation`` → feel / acceleration curve
+    - ``pattern``   → pattern index (0-6, mod 7)
+    - ``buffer``    → look-ahead buffer zone
     """
+
+    # Modes the user can select from the settings popup
+    MODES = ["streaming", "simplePenetration", "strokeEngine"]
 
     def __init__(self, instance_id: str, model_id: str = "ossm",
                  name: str = "OSSM BLE") -> None:
@@ -1606,12 +1631,24 @@ class OSSMBLEBackend(DeviceBackend):
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._device_addr: str = ""
         self._interval_ms: int = _OSSM_DEFAULT_INTERVAL_MS
-        self._state: str = "unknown"  # last reported firmware state
-        self._depth_pct: float = 100.0  # depth scaling (0-100)
-        self._last_pos: float = 50.0
+        self._mode: str = "streaming"  # operating mode
+        self._use_fts: bool = True     # prefer FTS binary if available
+        self._has_fts: bool = False    # set after service discovery
+
+        # Firmware state (parsed from JSON notifications)
+        self._state: str = "unknown"
+        self._fw_params: Dict[str, Any] = {}  # speed, stroke, depth, etc.
+        self._position_mm: float = 0.0
+        self._patterns: List[Dict[str, Any]] = []
+
+        # Last sent axis values (for delta / keep-alive)
+        self._last_stroke: float = 50.0
+        self._last_set: Dict[str, int] = {}   # key -> last sent int value
 
     def connect(self, address: str = "",
                 interval_ms: int = _OSSM_DEFAULT_INTERVAL_MS,
+                mode: str = "streaming",
+                use_fts: bool = True,
                 **kwargs) -> bool:
         """Connect via BLE.  *address* is a MAC/UUID (blank = auto-scan)."""
         try:
@@ -1623,6 +1660,8 @@ class OSSMBLEBackend(DeviceBackend):
         self._device_addr = address
         self._interval_ms = max(_OSSM_MIN_INTERVAL_MS,
                                 min(_OSSM_MAX_INTERVAL_MS, interval_ms))
+        self._mode = mode if mode in self.MODES else "streaming"
+        self._use_fts = use_fts
 
         self._loop = asyncio.new_event_loop()
         self._stop.clear()
@@ -1632,7 +1671,7 @@ class OSSMBLEBackend(DeviceBackend):
         self._thread.start()
 
         # Wait for connection with timeout
-        deadline = time.monotonic() + 10.0
+        deadline = time.monotonic() + 12.0
         while time.monotonic() < deadline and not self._connected:
             time.sleep(0.05)
         return self._connected
@@ -1644,20 +1683,21 @@ class OSSMBLEBackend(DeviceBackend):
     async def _ble_task(self) -> None:
         import bleak
 
-        # Scan for OSSM if no address given
+        # ── Scan ──────────────────────────────────────────────────
         addr = self._device_addr
         if not addr:
-            log.info(f"[{self.name}] scanning for OSSM BLE device...")
+            log.info(f"[{self.name}] scanning for OSSM (advertises as 'setup')...")
             devices = await bleak.BleakScanner.discover(
-                timeout=6.0,
+                timeout=8.0,
                 service_uuids=[_OSSM_SERVICE_UUID],
             )
+            # OSSM advertises as "setup"
             for d in devices:
-                if d.name and ("OSSM" in d.name.upper() or "STROKER" in d.name.upper()):
+                if d.name and d.name.lower() in ("setup", "ossm"):
                     addr = d.address
-                    log.info(f"[{self.name}] found {d.name} at {addr}")
+                    log.info(f"[{self.name}] found '{d.name}' at {addr}")
                     break
-            # Fallback: any device advertising the OSSM service
+            # Fallback: anything with OSSM service
             if not addr and devices:
                 addr = devices[0].address
                 log.info(f"[{self.name}] found OSSM service at {addr}")
@@ -1666,6 +1706,7 @@ class OSSMBLEBackend(DeviceBackend):
                 log.warning(self._error)
                 return
 
+        # ── Connect ───────────────────────────────────────────────
         try:
             client = bleak.BleakClient(addr, timeout=10.0)
             await client.connect()
@@ -1673,42 +1714,93 @@ class OSSMBLEBackend(DeviceBackend):
             self._connected = True
             log.info(f"[{self.name}] BLE connected to {addr}")
 
-            # Subscribe to state notifications
+            # ── State notifications ───────────────────────────────
             try:
                 await client.start_notify(
                     _OSSM_STATE_CHAR_UUID, self._on_state_notify)
+                log.info(f"[{self.name}] subscribed to state notifications")
             except Exception as exc:
                 log.debug(f"[{self.name}] state notify not available: {exc}")
 
-            # Enter streaming mode
-            await client.write_gatt_char(
-                _OSSM_CMD_CHAR_UUID,
-                _OSSM_CMD_STREAMING.encode(),
-                response=False,
-            )
-            self._state = "streaming"
-            log.info(f"[{self.name}] entered streaming mode "
-                     f"(interval={self._interval_ms}ms)")
+            # ── Speed knob → absolute mode ────────────────────────
+            try:
+                await client.write_gatt_char(
+                    _OSSM_SPEED_KNOB_CHAR_UUID,
+                    b"false", response=True)
+                log.info(f"[{self.name}] speed knob set to absolute")
+            except Exception as exc:
+                log.debug(f"[{self.name}] speed knob config write failed: {exc}")
 
-            # Main streaming loop
+            # ── Check FTS (binary) characteristic availability ────
+            self._has_fts = False
+            if self._use_fts:
+                for svc in client.services:
+                    if svc.uuid.lower() == _OSSM_FTS_SERVICE_UUID:
+                        for ch in svc.characteristics:
+                            if ch.uuid.lower() == _OSSM_FTS_CHAR_UUID:
+                                self._has_fts = True
+                                break
+                        break
+                if self._has_fts:
+                    log.info(f"[{self.name}] FTS binary characteristic available")
+                else:
+                    log.info(f"[{self.name}] FTS not available, using text stream")
+
+            # ── Read pattern list ─────────────────────────────────
+            try:
+                raw = await client.read_gatt_char(_OSSM_PATTERNS_CHAR_UUID)
+                self._patterns = json.loads(raw.decode("utf-8"))
+                log.info(f"[{self.name}] patterns: {[p.get('name') for p in self._patterns]}")
+            except Exception as exc:
+                log.debug(f"[{self.name}] patterns read failed: {exc}")
+
+            # ── Enter operating mode ──────────────────────────────
+            mode_cmd = {
+                "streaming":          _OSSM_CMD_STREAMING,
+                "simplePenetration":  _OSSM_CMD_SIMPLE,
+                "strokeEngine":       _OSSM_CMD_STROKE_ENGINE,
+            }.get(self._mode, _OSSM_CMD_STREAMING)
+
+            await client.write_gatt_char(
+                _OSSM_CMD_CHAR_UUID, mode_cmd.encode(), response=False)
+            log.info(f"[{self.name}] sent '{mode_cmd}' (homing will run if needed)")
+
+            # Wait for homing + preflight (up to 30 s)
+            deadline = time.monotonic() + 30.0
+            while time.monotonic() < deadline and not self._stop.is_set():
+                st = self._state.lower()
+                if "idle" in st:  # e.g. "streaming.idle", "simplePenetration.idle"
+                    break
+                if "error" in st:
+                    self._error = f"OSSM firmware error: {self._state}"
+                    log.error(self._error)
+                    break
+                await asyncio.sleep(0.1)
+            if "idle" in self._state.lower():
+                log.info(f"[{self.name}] mode ready: {self._state}")
+            else:
+                log.warning(f"[{self.name}] mode not ready after wait: {self._state}")
+
+            # ── Main loop ─────────────────────────────────────────
             interval_s = self._interval_ms / 1000.0
             while not self._stop.is_set():
                 if self._queue:
                     vals = self._queue.pop()
                     self._queue.clear()
-                    await self._send_stream(client, vals)
+                    await self._process_frame(client, vals)
                 else:
-                    # Keep-alive: resend last position
-                    await self._send_stream(client, {})
+                    # Keep-alive: resend last position in streaming mode
+                    if self._mode == "streaming":
+                        await self._send_position(client, self._last_stroke)
                 await asyncio.sleep(interval_s)
 
-            # Clean exit: stop motor
+            # ── Clean exit: return to menu (firmware stops motor) ─
             try:
                 await client.write_gatt_char(
                     _OSSM_CMD_CHAR_UUID,
-                    _OSSM_CMD_STOP.encode(),
-                    response=False,
-                )
+                    _OSSM_CMD_MENU.encode(),
+                    response=False)
+                log.info(f"[{self.name}] sent go:menu")
             except Exception:
                 pass
 
@@ -1724,41 +1816,125 @@ class OSSMBLEBackend(DeviceBackend):
                     pass
             self._client = None
 
-    async def _send_stream(self, client, axis_values: Dict[str, float]) -> None:
-        """Send a ``stream:<pos>:<time_ms>`` command via BLE."""
-        stroke = axis_values.get("stroke", self._last_pos)
-        depth = axis_values.get("depth", self._depth_pct)
+    # ── Frame processing ──────────────────────────────────────────
 
-        # Scale stroke by depth: depth=100 means full range,
-        # depth=50 means half range centred around 50
-        self._depth_pct = max(0.0, min(100.0, depth))
-        half_range = self._depth_pct / 2.0
-        center = 50.0
-        pos = center + (stroke - 50.0) * (half_range / 50.0)
-        pos = max(0.0, min(100.0, pos))
-        self._last_pos = stroke
+    async def _process_frame(self, client, vals: Dict[str, float]) -> None:
+        """Route axis values to the appropriate firmware commands."""
+        if self._mode == "streaming":
+            # In streaming mode only 'stroke' drives position
+            stroke = vals.get("stroke", self._last_stroke)
+            self._last_stroke = stroke
+            await self._send_position(client, stroke)
+            # Also forward set: parameters if changed (speed etc. act as
+            # firmware-side limits in streaming mode)
+            for key in ("speed", "stroke", "depth", "sensation", "buffer"):
+                if key == "stroke":
+                    continue  # 'stroke' is position in streaming mode
+                if key in vals:
+                    await self._send_set(client, key, int(vals[key]))
+        else:
+            # simplePenetration / strokeEngine: all params via set:
+            for key in ("speed", "stroke", "depth", "sensation", "buffer"):
+                if key in vals:
+                    await self._send_set(client, key, int(vals[key]))
+            if "pattern" in vals:
+                await self._send_set(client, "pattern", int(vals["pattern"]) % 7)
 
-        cmd = f"stream:{int(pos)}:{self._interval_ms}"
+    async def _send_position(self, client, position: float) -> None:
+        """Send position (0-100) via FTS binary or text stream command."""
+        pos = max(0.0, min(100.0, position))
         try:
-            await client.write_gatt_char(
-                _OSSM_CMD_CHAR_UUID, cmd.encode(), response=False)
+            if self._has_fts:
+                # FTS binary: [pos_u8(0-180), time_msb, time_lsb]
+                # pos is divided by 1.8 internally → multiply by 1.8
+                pos_byte = int(pos * 1.8)          # 0-180
+                pos_byte = max(0, min(180, pos_byte))
+                time_ms = self._interval_ms
+                buf = bytes([pos_byte, (time_ms >> 8) & 0xFF, time_ms & 0xFF])
+                await client.write_gatt_char(
+                    _OSSM_FTS_CHAR_UUID, buf, response=False)
+            else:
+                cmd = f"stream:{int(pos)}:{self._interval_ms}"
+                await client.write_gatt_char(
+                    _OSSM_CMD_CHAR_UUID, cmd.encode(), response=False)
         except Exception as exc:
             self._error = str(exc)
             log.error(f"[{self.name}] BLE write error: {exc}")
 
-    def _on_state_notify(self, _sender, data: bytearray) -> None:
-        """Handle state characteristic notifications."""
+    async def _send_set(self, client, param: str, value: int) -> None:
+        """Send ``set:<param>:<value>`` only if value changed."""
+        value = max(0, min(100, value))
+        if self._last_set.get(param) == value:
+            return
+        self._last_set[param] = value
+        cmd = f"set:{param}:{value}"
         try:
-            state = data.decode("utf-8").strip()
-            self._state = state
-            log.debug(f"[{self.name}] state: {state}")
+            await client.write_gatt_char(
+                _OSSM_CMD_CHAR_UUID, cmd.encode(), response=False)
+            log.debug(f"[{self.name}] TX: {cmd}")
+        except Exception as exc:
+            self._error = str(exc)
+            log.error(f"[{self.name}] BLE write error: {exc}")
+
+    # ── State notifications ───────────────────────────────────────
+
+    def _on_state_notify(self, _sender, data: bytearray) -> None:
+        """Handle state characteristic notifications (JSON payload)."""
+        try:
+            raw = data.decode("utf-8").strip()
+            # Initial boot: "ok:boot"
+            if raw.startswith("ok:"):
+                self._state = raw
+                log.debug(f"[{self.name}] state: {raw}")
+                return
+            # Normal: JSON object
+            obj = json.loads(raw)
+            self._state = obj.get("state", self._state)
+            self._fw_params = {
+                "speed":     obj.get("speed", 0),
+                "stroke":    obj.get("stroke", 50),
+                "sensation": obj.get("sensation", 50),
+                "buffer":    obj.get("buffer", 100),
+                "depth":     obj.get("depth", 10),
+                "pattern":   obj.get("pattern", 0),
+            }
+            self._position_mm = obj.get("position", 0.0)
+            log.debug(f"[{self.name}] state: {self._state}  "
+                      f"pos={self._position_mm:.1f}mm  "
+                      f"spd={self._fw_params.get('speed')}")
+        except json.JSONDecodeError:
+            # Might be a plain string state
+            self._state = data.decode("utf-8", errors="replace").strip()
+            log.debug(f"[{self.name}] state (plain): {self._state}")
         except Exception:
             pass
 
+    # ── Properties ────────────────────────────────────────────────
+
     @property
     def state(self) -> str:
-        """Current firmware state (idle/streaming/homing/error)."""
+        """Current firmware state (e.g. 'streaming.idle')."""
         return self._state
+
+    @property
+    def firmware_params(self) -> Dict[str, Any]:
+        """Last reported firmware parameters (speed, stroke, etc.)."""
+        return dict(self._fw_params)
+
+    @property
+    def position_mm(self) -> float:
+        """Last reported physical position in mm."""
+        return self._position_mm
+
+    @property
+    def patterns(self) -> List[Dict[str, Any]]:
+        """Pattern list read from the device on connect."""
+        return list(self._patterns)
+
+    @property
+    def has_fts(self) -> bool:
+        """Whether the FTS binary streaming characteristic was found."""
+        return self._has_fts
 
     def _do_write(self, axis_values: Dict[str, float]) -> None:
         pass  # handled by async BLE task
